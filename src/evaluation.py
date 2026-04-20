@@ -207,98 +207,71 @@ def run_xgboost_backtest(df, model, features, initial_capital=10000, buy_fractio
         })
         
     return pd.DataFrame(history)
-
-
-def walk_forward_cv(df, features,model_params =None, initial_train_months=12, test_months=6, gap_days=21):
-    """
-    Performs expanding window Walk-Forward Cross-Validation for ranking models.
-    
-    Parameters:
-    - initial_train_months: How much data to use for the very first training period.
-    - test_months: How many months to step forward for each out-of-sample test.
-    - gap_days: The embargo period to prevent data leakage (must be >= your prediction horizon).
-    """
-
+def walk_forward_cv(df, features, model_params=None, initial_train_months=12, test_months=6, gap_days=21, callback=None, pretrained_model=None):
     df['date'] = pd.to_datetime(df['date'])
-    # 1. Ensure dataframe is strictly sorted by date for time-series splitting
     df = df.sort_values(by=['date', 'Symbol']).copy()
     
-    # Get the absolute start and end dates of the dataset
     min_date = df['date'].min()
     max_date = df['date'].max()
     
-    # Initialize the boundary for the first fold
-    current_train_end = min_date + pd.DateOffset(months=initial_train_months)
+    total_folds = 0
+    temp_date = min_date + pd.DateOffset(months=initial_train_months)
+    while temp_date < max_date:
+        total_folds += 1
+        temp_date += pd.DateOffset(months=test_months)
     
-    oos_predictions = [] # List to store all Out-Of-Sample (OOS) predictions
+    current_train_end = min_date + pd.DateOffset(months=initial_train_months)
+    oos_predictions = []
     fold = 1
     
     while current_train_end < max_date:
-        # 2. Define strict boundaries to prevent look-ahead bias
-        # We enforce a gap between the end of train and start of test
         train_cutoff = current_train_end - pd.Timedelta(days=gap_days)
         test_start = current_train_end
         test_end = test_start + pd.DateOffset(months=test_months)
         
-        # 3. Slice the Data (Expanding Window)
         train_df = df[df['date'] <= train_cutoff].copy()
         test_df = df[(df['date'] >= test_start) & (df['date'] < test_end)].copy()
         
-        # Stop if we run out of test data at the end of the dataset
         if test_df.empty:
             break
             
-        print(f"--- Fold {fold} ---")
-        print(f"Train: {train_df['date'].min().date()} to {train_df['date'].max().date()} ({len(train_df)} rows)")
-        print(f"Test:  {test_df['date'].min().date()} to {test_df['date'].max().date()} ({len(test_df)} rows)")
+        fold_msg = (f"--- Fold {fold} ---\n"
+                    f"Train: {train_df['date'].min().date()} to {train_df['date'].max().date()} ({len(train_df)} rows)\n"
+                    f"Test:  {test_df['date'].min().date()} to {test_df['date'].max().date()} ({len(test_df)} rows)")
         
-        # 4. Extract X, y, and qids
-        X_train = train_df[features]
-        y_train = train_df['target_quintile']
-        qids_train = train_df['qid']
+        print(fold_msg) 
+        if callback:
+            callback(fold, total_folds, fold_msg)
         
         X_test = test_df[features]
-        y_test = test_df['target_quintile']
-        qids_test = test_df['qid']
         
-        if model_params is None:
-            # Fallback to your original guesses if no params are provided
-            model_params = {
-                'tree_method': 'hist',
-                'objective': 'rank:ndcg', 
-                'n_estimators': 100,
-                'learning_rate': 0.1,
-                'max_depth': 4,
-                'colsample_bytree': 0.7,
-                'subsample': 0.8,
-                'random_state': 42
-            }
+        # --- NEW LOGIC: Use pretrained model if provided ---
+        if pretrained_model is not None:
+            test_df['pred_score'] = pretrained_model.predict(X_test)
+        else:
+            # Otherwise, train a new model per fold
+            X_train, y_train, qids_train = train_df[features], train_df['target_quintile'], train_df['qid']
+            y_test, qids_test = test_df['target_quintile'], test_df['qid']
+            
+            if model_params is None:
+                model_params = {
+                    'tree_method': 'hist', 'objective': 'rank:ndcg', 
+                    'n_estimators': 100, 'learning_rate': 0.1, 'max_depth': 4,
+                    'colsample_bytree': 0.7, 'subsample': 0.8, 'random_state': 42
+                }
 
-        # 5. Initialize the Ranker
-        ranker = xgb.XGBRanker(**model_params)
-        
-        # Train the model (verbose=False to keep the console clean during the loop)
-        ranker.fit(
-            X_train, y_train, qid=qids_train,
-            eval_set=[(X_test, y_test)], eval_qid=[qids_test],
-            verbose=False 
-        )
-        
-        # 6. Make Predictions and Save
-        test_df['pred_score'] = ranker.predict(X_test)
+            ranker = xgb.XGBRanker(**model_params)
+            ranker.fit(X_train, y_train, qid=qids_train, eval_set=[(X_test, y_test)], eval_qid=[qids_test], verbose=False)
+            test_df['pred_score'] = ranker.predict(X_test)
+            
         oos_predictions.append(test_df)
-        
-        # 7. Step the window forward for the next fold
         current_train_end = test_end
         fold += 1
         
-    # Combine all out-of-sample predictions into one continuous, honest DataFrame
     final_oos_df = pd.concat(oos_predictions)
     print("\nWalk-Forward CV Complete.")
     
     return final_oos_df
-
-
 
 def optimize_xgboost_ranker(df, features, n_trials=50):
     """
