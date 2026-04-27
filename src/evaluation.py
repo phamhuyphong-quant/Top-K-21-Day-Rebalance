@@ -1,37 +1,38 @@
 
 import matplotlib.pyplot as plt
 import pandas as pd
-import xgboost as xgb
-from sklearn.metrics import ndcg_score
-import optuna
-import numpy as np
-
 def feature_influence(model, features):
     importances = pd.Series(model.feature_importances_, index=features).sort_values()
     importances.plot(kind='barh', title='What drives the ranking?')
     plt.show()
 
-
-def evaluate_ranking_performance(test_df, X_test, ranker, top_quantile=0.2, ret_col='next_1m_ret'):
+def evaluate_ranking_performance(test_df, X_test=None, ranker=None, top_quantile=0.2, ret_col='next_1m_ret'):
     """
-    Evaluates the ranker by comparing the win rate of top-ranked picks 
-    against the overall market baseline.
+    Evaluates the ranker. Hỗ trợ cả 2 chế độ:
+    1. Chế độ cũ (Tĩnh): Truyền X_test và ranker để tự tính điểm.
+    2. Chế độ mới (Động): Bỏ trống X_test và ranker, tự đọc cột 'pred_score' hoặc 'score' có sẵn.
     """
-    # 1. Generate scores and add to a copy to avoid SettingWithCopy warnings
     eval_df = test_df.copy()
-    eval_df['score'] = ranker.predict(X_test)
     
-    # 2. Identify top picks per date using the predicted score
-    # We use transform to keep the index aligned with the original dataframe
+    # --- LOGIC ĐỘNG: Xác định nguồn lấy điểm số ---
+    if ranker is not None and X_test is not None:
+        # Chế độ cũ: Tự chạy dự báo
+        eval_df['score'] = ranker.predict(X_test)
+    elif 'pred_score' in eval_df.columns:
+        # Chế độ mới: Lấy điểm OOS từ Walk-Forward
+        eval_df['score'] = eval_df['pred_score']
+    elif 'score' in eval_df.columns:
+        pass # Nếu cột đã tên là score thì bỏ qua
+    else:
+        raise ValueError("Không tìm thấy điểm số! Vui lòng truyền X_test và ranker, hoặc cung cấp DataFrame có cột 'pred_score'.")
+    
+    # Identify top picks per date using the predicted score
     score_rank_pct = eval_df.groupby('date')['score'].rank(ascending=False, pct=True)
     top_picks = eval_df[score_rank_pct <= top_quantile]
     
-    # 3. Calculate Win Rates
-    # Win rate = percentage of picks where future returns were positive
+    # Calculate Win Rates
     top_win_rate = (top_picks[ret_col] > 0).mean()
     market_win_rate = (eval_df[ret_col] > 0).mean()
-    
-    # 4. Calculate "Lift" (How much better are we than random?)
     lift = top_win_rate - market_win_rate
     
     print(f"--- Backtest Results (Top {top_quantile*100:.0f}% Picks) ---")
@@ -46,20 +47,63 @@ def evaluate_ranking_performance(test_df, X_test, ranker, top_quantile=0.2, ret_
         'top_picks_df': top_picks
     }
 
-def predicted_quintile_chart(test_df, X_test, ranker):
-    df_plot = test_df.copy()
-    # Generate the missing column
-    df_plot['score'] = ranker.predict(X_test)
+def feature_influence_ic(test_df, features, target_col='next_1m_ret'):
+    """
+    Đánh giá độ ảnh hưởng của Feature bằng Information Coefficient (IC).
+    Tính tương quan Spearman trực tiếp từ DataFrame dự báo.
+    """
+    ic_dict = {}
+    for feat in features:
+        # Tính tương quan hạng Spearman giữa Feature và Lợi nhuận tương lai
+        ic = test_df[feat].corr(test_df[target_col], method='spearman')
+        ic_dict[feat] = ic
+        
+    # Sắp xếp và vẽ biểu đồ
+    ic_series = pd.Series(ic_dict).sort_values()
     
+    plt.figure(figsize=(10, 6))
+    # Màu xanh cho tương quan dương, màu đỏ cho tương quan âm
+    colors = ['#d62728' if x < 0 else '#1f77b4' for x in ic_series]
+    
+    ic_series.plot(kind='barh', color=colors, edgecolor='black')
+    plt.title('Feature Influence via Information Coefficient (OOS Data)', fontsize=14, fontweight='bold')
+    plt.xlabel('Spearman Rank Correlation (IC)')
+    plt.grid(axis='x', linestyle='--', alpha=0.7)
+    plt.tight_layout()
+    plt.show()
+
+
+def predicted_quintile_chart(test_df, X_test=None, ranker=None):
+    """
+    Vẽ biểu đồ hiệu suất. Hỗ trợ cả mô hình tĩnh (có ranker) và mô hình động (đã có pred_score).
+    """
+    df_plot = test_df.copy()
+    
+    # --- LOGIC ĐỘNG: Xác định nguồn lấy điểm số ---
+    if ranker is not None and X_test is not None:
+        df_plot['score'] = ranker.predict(X_test)
+    elif 'pred_score' in df_plot.columns:
+        df_plot['score'] = df_plot['pred_score']
+    elif 'score' in df_plot.columns:
+        pass
+    else:
+        raise ValueError("Không tìm thấy điểm số! Vui lòng truyền X_test và ranker, hoặc cung cấp DataFrame có cột 'pred_score'.")
+    
+    # Sử dụng rank(method='first') để tránh lỗi khi có nhiều điểm số trùng nhau
+    # Gán nhãn 1, 2, 3, 4, 5 cho đẹp trên trục X
     df_plot['pred_quintile'] = df_plot.groupby('date')['score'].transform(
-        lambda x: pd.qcut(x, 5, labels=False)
+        lambda x: pd.qcut(x.rank(method='first'), 5, labels=[1, 2, 3, 4, 5])
     )
 
     performance = df_plot.groupby('pred_quintile')['next_1m_ret'].mean()
-    performance.plot(kind='bar', title='Future Return by Predicted Quintile')
-    plt.ylabel('Average 1-Month Forward Return')
-    plt.show()
     
+    plt.figure(figsize=(8, 5))
+    performance.plot(kind='bar', title='Future Return by Predicted Quintile', color='#1f77b4', edgecolor='black')
+    plt.ylabel('Average 1-Month Forward Return')
+    plt.xlabel('Quintile (1 = Nhóm tệ nhất, 5 = Nhóm tốt nhất)')
+    plt.xticks(rotation=0)
+    plt.grid(axis='y', linestyle='--', alpha=0.7)
+    plt.show()
 
 
 def capital_over_time(result):
@@ -207,151 +251,25 @@ def run_xgboost_backtest(df, model, features, initial_capital=10000, buy_fractio
         })
         
     return pd.DataFrame(history)
-def walk_forward_cv(df, features, model_params=None, initial_train_months=12, test_months=6, gap_days=21, callback=None, pretrained_model=None):
-    df['date'] = pd.to_datetime(df['date'])
-    df = df.sort_values(by=['date', 'Symbol']).copy()
-    
-    min_date = df['date'].min()
-    max_date = df['date'].max()
-    
-    total_folds = 0
-    temp_date = min_date + pd.DateOffset(months=initial_train_months)
-    while temp_date < max_date:
-        total_folds += 1
-        temp_date += pd.DateOffset(months=test_months)
-    
-    current_train_end = min_date + pd.DateOffset(months=initial_train_months)
-    oos_predictions = []
-    fold = 1
-    
-    while current_train_end < max_date:
-        train_cutoff = current_train_end - pd.Timedelta(days=gap_days)
-        test_start = current_train_end
-        test_end = test_start + pd.DateOffset(months=test_months)
-        
-        train_df = df[df['date'] <= train_cutoff].copy()
-        test_df = df[(df['date'] >= test_start) & (df['date'] < test_end)].copy()
-        
-        if test_df.empty:
-            break
-            
-        fold_msg = (f"--- Fold {fold} ---\n"
-                    f"Train: {train_df['date'].min().date()} to {train_df['date'].max().date()} ({len(train_df)} rows)\n"
-                    f"Test:  {test_df['date'].min().date()} to {test_df['date'].max().date()} ({len(test_df)} rows)")
-        
-        print(fold_msg) 
-        if callback:
-            callback(fold, total_folds, fold_msg)
-        
-        X_test = test_df[features]
-        
-        # --- NEW LOGIC: Use pretrained model if provided ---
-        if pretrained_model is not None:
-            test_df['pred_score'] = pretrained_model.predict(X_test)
-        else:
-            # Otherwise, train a new model per fold
-            X_train, y_train, qids_train = train_df[features], train_df['target_quintile'], train_df['qid']
-            y_test, qids_test = test_df['target_quintile'], test_df['qid']
-            
-            if model_params is None:
-                model_params = {
-                    'tree_method': 'hist', 'objective': 'rank:ndcg', 
-                    'n_estimators': 100, 'learning_rate': 0.1, 'max_depth': 4,
-                    'colsample_bytree': 0.7, 'subsample': 0.8, 'random_state': 42
-                }
-
-            ranker = xgb.XGBRanker(**model_params)
-            ranker.fit(X_train, y_train, qid=qids_train, eval_set=[(X_test, y_test)], eval_qid=[qids_test], verbose=False)
-            test_df['pred_score'] = ranker.predict(X_test)
-            
-        oos_predictions.append(test_df)
-        current_train_end = test_end
-        fold += 1
-        
-    final_oos_df = pd.concat(oos_predictions)
-    print("\nWalk-Forward CV Complete.")
-    
-    return final_oos_df
-
-def optimize_xgboost_ranker(df, features, n_trials=50):
-    """
-    Uses Optuna to find the mathematically perfect XGBoost parameters.
-    """
-    print("Preparing data for Optuna...")
-    
-    # 1. Create a recent Train/Validation split (e.g., train on 2022-2023, validate on 2024)
-    # We do NOT use the 2025-2026 test set here to prevent look-ahead bias!
-    df = df.sort_values(by=['date', 'Symbol']).copy()
-    
-    val_start = pd.Timestamp('2024-01-01')
-    val_end = pd.Timestamp('2025-01-01')
-    train_cutoff = val_start - pd.Timedelta(days=21)
-    
-    train_df = df[df['date'] <= train_cutoff]
-    val_df = df[(df['date'] >= val_start) & (df['date'] < val_end)]
-    
-    X_train = train_df[features]
-    y_train = train_df['target_quintile']
-    qids_train = train_df['qid']
-    
-    X_val = val_df[features]
-    y_val = val_df['target_quintile']
-    qids_val = val_df['qid']
-
-    # 2. Define the Optuna Objective Function
-    def objective(trial):
-        # Define the Search Space (Optuna will guess values within these ranges)
-        param = {
-            'tree_method': 'hist',
-            'objective': 'rank:ndcg',
-            'random_state': 42,
-            # Let Optuna explore tree complexity
-            'max_depth': trial.suggest_int('max_depth', 3, 9),
-            # Let Optuna explore learning speed
-            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.2, log=True),
-            # Let Optuna explore the number of trees
-            'n_estimators': trial.suggest_int('n_estimators', 50, 300),
-            # Let Optuna explore row and column sampling (prevents overfitting)
-            'subsample': trial.suggest_float('subsample', 0.5, 1.0),
-            'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 1.0),
-            # Let Optuna explore regularization (penalizes overly complex trees)
-            'reg_lambda': trial.suggest_float('reg_lambda', 1e-3, 10.0, log=True),
-            'reg_alpha': trial.suggest_float('reg_alpha', 1e-3, 10.0, log=True)
-        }
-        
-        # Initialize and Train
-        model = xgb.XGBRanker(**param)
-        model.fit(X_train, y_train, qid=qids_train, verbose=False)
-        
-        # Predict on the Validation Set
-        val_df_copy = val_df.copy()
-        val_df_copy['pred_score'] = model.predict(X_val)
-        
-        # Calculate Average NDCG across all validation dates
-        ndcg_scores = []
-        for date, group in val_df_copy.groupby('date'):
-            if len(group) > 1: # NDCG requires at least 2 items to rank
-                # We want to see how well the predicted scores rank the actual target quintiles
-                true_relevance = np.asarray([group['target_quintile'].values])
-                predicted_scores = np.asarray([group['pred_score'].values])
-                score = ndcg_score(true_relevance, predicted_scores)
-                ndcg_scores.append(score)
-                
-        # Return the mean score for Optuna to maximize
-        return np.mean(ndcg_scores)
-
-    # 3. Create and run the Optuna Study
-    print(f"Starting Optuna search for {n_trials} trials...")
-    study = optuna.create_study(direction='maximize')
-    study.optimize(objective, n_trials=n_trials)
-    
-    print("\n--- Optuna Optimization Complete ---")
-    print(f"Best Validation NDCG Score: {study.best_value:.4f}")
-    print("Best Parameters:")
-    for key, value in study.best_params.items():
-        print(f"    '{key}': {value},")
-        
-    return study.best_params
 
 # Run it! (This might take a few minutes depending on your computer speed)
 # best_params = optimize_xgboost_ranker(df, features, n_trials=50)
+
+
+def plot_model_comparison(res_base, res_lstm):
+    plt.figure(figsize=(12, 6))
+    
+    # Chuẩn hóa về tỷ lệ % lợi nhuận để dễ so sánh
+    base_return = (res_base['total_value'] / res_base['total_value'].iloc[0] - 1) * 100
+    lstm_return = (res_lstm['total_value'] / res_lstm['total_value'].iloc[0] - 1) * 100
+    
+    plt.plot(res_base['date'], base_return, label='Baseline XGBoost (Stable)', color='#1f77b4', linewidth=2)
+    plt.plot(res_lstm['date'], lstm_return, label='Advanced LSTM (Unstable)', color='#d62728', linestyle='--', linewidth=2)
+    
+    plt.title('Equity Curve Comparison: Baseline vs. LSTM', fontsize=14, fontweight='bold')
+    plt.xlabel('Date')
+    plt.ylabel('Cumulative Return (%)')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.show()

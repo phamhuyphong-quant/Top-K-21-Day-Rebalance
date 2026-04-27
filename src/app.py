@@ -7,7 +7,8 @@ import google.generativeai as genai
 
 # Ensure local imports work
 from features import build_features, target_generating_ranking
-from evaluation import run_xgboost_backtest, walk_forward_cv
+from evaluation import run_xgboost_backtest
+from models import walk_forward_cv, test_train_spliter # Import thêm nếu cần
 
 st.set_page_config(page_title="VN100 Backtest Dashboard", layout="wide")
 
@@ -50,12 +51,20 @@ if mode == "Use Pretrained Model":
     selected_features = best_features
     st.sidebar.info("Using the optimized 8 features to reproduce the pretrained model's Walk-Forward results.")
 else:
-    all_available_features = best_features + ['vol_21d_avg', 'SMA_50']
+    all_available_features = [
+    'log_ret_1m', 'log_ret_3m', 'log_ret_6m',  'log_ret_1y',
+    'volatility_shock_monthly', 'volatility_3m', 'volatility_6m', 'volatility_1m' ,   'volatility_1w' , 
+    'dist_SMA_100', 'dist_SMA_14','dist_SMA_50'    ,                     
+    'RSI_14','volume_surge_monthly', 'vol_3m_avg'
+]
     selected_features = st.sidebar.multiselect(
         "Select Features:", 
         all_available_features, 
         default=best_features
     )
+    
+    # THÊM NÚT KÍCH HOẠT MEGA-ALPHA
+    use_mega_alpha = st.sidebar.checkbox("🔥 Kích hoạt Mega-Alpha (LSTM-Attention)", value=False)
 
 if st.sidebar.button("🚀 Run Backtest"):
     st.session_state.backtest_run = True
@@ -91,7 +100,8 @@ if st.session_state.backtest_run:
         honest_test_df = walk_forward_cv(
             df, selected_features, 
             initial_train_months=12, test_months=6, gap_days=21,
-            callback=streamlit_callback
+            callback=streamlit_callback,
+            use_mega=use_mega_alpha
         )
         
         with st.spinner("Backtesting OOS results..."):

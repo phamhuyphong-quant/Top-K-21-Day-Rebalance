@@ -8,3 +8,5 @@ scikit-learn
 optuna
 streamlit
 google-generativeai
+gplearn
+torch

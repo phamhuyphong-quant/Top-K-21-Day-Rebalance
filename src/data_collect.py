@@ -46,17 +46,24 @@ def update_market_data(file_path, symbols, start_date="2018-01-01", batch_size=5
     and incrementally saves to a Parquet file.
     """
     
-    today = pd.Timestamp.today().normalize().tz_localize(None)
+
     all_data = []
     processed_count = 0
 
-    # Calculate the last valid trading day to handle weekends
-    if today.weekday() == 5:    # 5 = Saturday
+        # Replace the latest_market_day logic
+    today = pd.Timestamp.today().normalize().tz_localize(None)
+
+    # Always look back to last completed trading day
+    weekday = today.weekday()
+    if weekday == 0:    # Monday — last close was Friday
+        latest_market_day = today - pd.Timedelta(days=3)
+    elif weekday == 5:  # Saturday
         latest_market_day = today - pd.Timedelta(days=1)
-    elif today.weekday() == 6:  # 6 = Sunday
+    elif weekday == 6:  # Sunday
         latest_market_day = today - pd.Timedelta(days=2)
     else:
-        latest_market_day = today
+        # Tue–Fri: use yesterday (today's market may not have closed)
+        latest_market_day = today - pd.Timedelta(days=1)
 
     # Load existing data if available
     if os.path.exists(file_path):
