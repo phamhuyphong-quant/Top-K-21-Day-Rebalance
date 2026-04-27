@@ -5,10 +5,15 @@ import matplotlib.pyplot as plt
 import os
 import google.generativeai as genai
 
-# Ensure local imports work
-from features import build_features, target_generating_ranking
-from evaluation import run_xgboost_backtest
-from models import walk_forward_cv, test_train_spliter # Import thêm nếu cần
+import streamlit as st
+import pandas as pd
+import xgboost as xgb
+import os
+
+# Standardized Absolute Imports
+from src.features import build_features, target_generating_ranking
+from src.evaluation import run_xgboost_backtest
+from src.models import walk_forward_cv
 
 st.set_page_config(page_title="VN100 Backtest Dashboard", layout="wide")
 
@@ -46,7 +51,7 @@ best_features = [
     'dist_SMA_100',                                # Fast Trend
     'RSI_14','volume_surge_monthly'
 ]
-
+use_mega_alpha = False
 if mode == "Use Pretrained Model":
     selected_features = best_features
     st.sidebar.info("Using the optimized 8 features to reproduce the pretrained model's Walk-Forward results.")
@@ -95,18 +100,21 @@ if st.session_state.backtest_run:
         def streamlit_callback(fold_num, total_folds, msg):
             all_messages.append(msg)
             status_log.code("\n".join(all_messages))
-            progress_bar.progress(fold_num / total_folds)
-
+            #progress_bar.progress(fold_num / total_folds)
+            progress_bar.progress(
+                min(fold_num / total_folds, 1.0),  # clamp to avoid > 1.0 error
+                text=f"Fold {fold_num}/{total_folds} complete"
+                )
         honest_test_df = walk_forward_cv(
             df, selected_features, 
-            initial_train_months=12, test_months=6, gap_days=21,
+            initial_train_months=24, test_months=6, gap_days=21,
             callback=streamlit_callback,
             use_mega=use_mega_alpha
         )
-        
+        progress_bar.progress(1.0, text="✅ Walk-forward CV complete!")
         with st.spinner("Backtesting OOS results..."):
             result = run_xgboost_backtest(
-                honest_test_df, model=None, features=selected_features,
+                honest_test_df, model=None, features=selected_features,buy_fraction=0.05,hold_fraction=0.15,
                 time_of_rebalance='M', trailing_stop=-0.10
             )
 
@@ -126,30 +134,89 @@ if st.session_state.backtest_run:
         st.metric("Final Portfolio Value", f"{final_nav:,.2f} VND", 
                   delta=f"{(final_nav-10000)/100:.2f}% Total ROI")
 
-        # --- VISUALIZATION: FEATURE IMPORTANCE ---
+        # --- VISUALIZATION: FEATURE IMPORTANCE (IC-BASED) ---
         st.divider()
         st.subheader("What drives the ranking?")
-        
-        with st.spinner("Training final global model for feature importance..."):
-            final_model = xgb.XGBRanker(
-                tree_method='hist', objective='rank:ndcg', 
-                n_estimators=100, learning_rate=0.1, max_depth=4,
-                colsample_bytree=0.7, subsample=0.8, random_state=42
+
+        with st.spinner("Computing feature influence and ranking diagnostics..."):
+
+            # --- 1. FEATURE INFLUENCE VIA INFORMATION COEFFICIENT ---
+            st.markdown("#### 📊 Feature Influence (Information Coefficient)")
+            st.caption("IC = rank correlation between each feature and actual next-month return. Higher = more predictive.")
+
+            ic_scores = {}
+            for feat in selected_features:
+                valid = honest_test_df[[feat, 'next_1m_ret']].dropna()
+                if len(valid) > 10:
+                    ic_scores[feat] = valid[feat].corr(valid['next_1m_ret'], method='spearman')
+
+            ic_series = pd.Series(ic_scores).sort_values()
+            colors = ['#d62728' if v < 0 else '#2ca02c' for v in ic_series.values]
+
+            fig_ic, ax_ic = plt.subplots(figsize=(10, 5))
+            ic_series.plot(kind='barh', ax=ax_ic, color=colors)
+            ax_ic.axvline(0, color='black', linewidth=0.8, linestyle='--')
+            ax_ic.set_title('Feature Influence: Information Coefficient (Spearman)', fontsize=13, fontweight='bold')
+            ax_ic.set_xlabel('IC Score')
+            ax_ic.grid(True, linestyle='--', alpha=0.5, axis='x')
+            st.pyplot(fig_ic)
+
+            # --- 2. QUINTILE MONOTONICITY CHART ---
+            st.markdown("#### 📈 Predicted Quintile vs Actual Return")
+            st.caption("A good ranking model should show strictly increasing returns from Quintile 1 → 5.")
+
+            quintile_returns = (
+                honest_test_df.groupby('pred_quintile')['next_1m_ret']
+                .mean()
+                .reset_index()
+            ) if 'pred_quintile' in honest_test_df.columns else None
+
+            if quintile_returns is not None:
+                fig_q, ax_q = plt.subplots(figsize=(8, 5))
+                ax_q.bar(quintile_returns['pred_quintile'], quintile_returns['next_1m_ret'] * 100,
+                        color=['#d62728','#ff7f0e','#bcbd22','#17becf','#2ca02c'])
+                ax_q.set_title('Average Return by Predicted Quintile (OOS)', fontsize=13, fontweight='bold')
+                ax_q.set_xlabel('Predicted Quintile (1=Worst, 5=Best)')
+                ax_q.set_ylabel('Avg Next-Month Return (%)')
+                ax_q.axhline(0, color='black', linewidth=0.8)
+                ax_q.grid(True, linestyle='--', alpha=0.5, axis='y')
+                st.pyplot(fig_q)
+            else:
+                # Compute pred_quintile from pred_score if not already present
+                honest_test_df['pred_quintile'] = pd.qcut(
+                    honest_test_df.groupby('date')['pred_score']
+                                .transform(lambda x: x.rank(pct=True)),
+                    q=5, labels=[1,2,3,4,5]
+                )
+                quintile_returns = honest_test_df.groupby('pred_quintile')['next_1m_ret'].mean().reset_index()
+                fig_q, ax_q = plt.subplots(figsize=(8, 5))
+                ax_q.bar(quintile_returns['pred_quintile'].astype(int), quintile_returns['next_1m_ret'] * 100,
+                        color=['#d62728','#ff7f0e','#bcbd22','#17becf','#2ca02c'])
+                ax_q.set_title('Average Return by Predicted Quintile (OOS)', fontsize=13, fontweight='bold')
+                ax_q.set_xlabel('Predicted Quintile (1=Worst, 5=Best)')
+                ax_q.set_ylabel('Avg Next-Month Return (%)')
+                ax_q.axhline(0, color='black', linewidth=0.8)
+                ax_q.grid(True, linestyle='--', alpha=0.5, axis='y')
+                st.pyplot(fig_q)
+
+            # --- 3. ALPHA GENERATION METRICS ---
+            st.markdown("#### 🎯 Predictive Power (Alpha Generation)")
+
+            top_q = honest_test_df.groupby('date', group_keys=False).apply(
+                lambda g: g[g['pred_score'] >= g['pred_score'].quantile(0.8)]
             )
-            
-            X_all = df[selected_features]
-            y_all = df['target_quintile']
-            qids_all = df['qid']
-            
-            final_model.fit(X_all, y_all, qid=qids_all, verbose=False)
-            
-            importances = pd.Series(final_model.feature_importances_, index=selected_features).sort_values()
-            
-            fig2, ax2 = plt.subplots(figsize=(10, 6))
-            importances.plot(kind='barh', ax=ax2, color='#2ca02c') 
-            ax2.set_title('Feature Importance (XGBoost)', fontsize=14, fontweight='bold')
-            ax2.grid(True, linestyle='--', alpha=0.6, axis='x')
-            st.pyplot(fig2)
+            all_ret   = honest_test_df['next_1m_ret'].dropna()
+            top_ret   = top_q['next_1m_ret'].dropna()
+
+            hit_rate      = (top_ret > 0).mean()
+            avg_top_ret   = top_ret.mean()
+            avg_all_ret   = all_ret.mean()
+            lift          = avg_top_ret - avg_all_ret
+
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Top-20% Hit Rate",   f"{hit_rate*100:.1f}%",  help="% of top picks with positive return")
+            col2.metric("Top-20% Avg Return", f"{avg_top_ret*100:.2f}%", help="Mean monthly return of top quintile")
+            col3.metric("Lift over Market",   f"{lift*100:.2f}%",       help="Top-20% return minus average market return")
 
 else:
     st.info("Select your strategy in the sidebar and click 'Run Backtest'.")

@@ -8,10 +8,11 @@ from sklearn.metrics import ndcg_score
 import torch
 import gc
 import torch.optim as optim
-# Thay vì from .alpha_mining import ...
+
 from src.alpha_mining import WorldQuantAlphas
 from src.deep_combiner import DynamicAlphaCombiner
 from src.features import build_features
+
 def test_train_spliter(df, test_start, features):
     df = df.copy()
     
@@ -97,7 +98,9 @@ def walk_forward_cv(df, features, model_params=None, initial_train_months=12,
     """
     df['date'] = pd.to_datetime(df['date'])
     df = df.sort_values(by=['date', 'Symbol']).copy()
-    
+    total_months = (df['date'].max().year - df['date'].min().year) * 12 + \
+                   (df['date'].max().month - df['date'].min().month)
+    total_folds = max(1, (total_months - initial_train_months) // test_months)
     alpha_pool = list(features)
     
     # 1. Chuẩn bị Alpha Pool nếu dùng Mega Alpha
@@ -195,10 +198,12 @@ def walk_forward_cv(df, features, model_params=None, initial_train_months=12,
                 daily_ndcg.append(score)
         
         current_ndcg = np.mean(daily_ndcg) if daily_ndcg else 0
-        print(f"Fold {fold} ({test_start.strftime('%Y-%m')}): NDCG = {current_ndcg:.4f}")
+        msg = f"Fold {fold}/{total_folds} ({test_start.strftime('%Y-%m')}): NDCG = {current_ndcg:.4f}"
+        print(msg)
 
         oos_predictions.append(test_df)
-        
+        if callback:
+            callback(fold, total_folds, msg)
         # Giải phóng bộ nhớ
         del train_df, X_train, y_train, X_test, y_test
         gc.collect()
