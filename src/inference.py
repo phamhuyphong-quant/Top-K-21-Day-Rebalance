@@ -1,74 +1,162 @@
 import pandas as pd
 import xgboost as xgb
+from src import models as md
 # Import your LSTM training module here if it's separated
-# from src.models import train_mega_lstm, predict_mega_lstm
 
-def generate_paper_trade_signals(df, features, use_mega=False, top_n=5, target_col='target_rank'):
+def generate_paper_trade_signals(
+    df: pd.DataFrame, 
+    current_portfolio: list, 
+    features: list, 
+    use_mega: bool = False, 
+    buy_n: int = 5, 
+    hold_n: int = 15, 
+    trend_filter_col: str = 'dist_SMA_50',
+    trend_filter_threshold: float = 1.0,
+    target_col: str = 'target_rank'
+):
     """
-    Trains a model on historical data and returns the top N stock symbols to buy today.
+    Generates Buy, Hold, and Sell signals mirroring walk-forward logic.
+    Applies a grace band (hold_n) for existing positions and a trend filter for new buys.
     
     Parameters:
-    - df: The full DataFrame containing features and dates.
+    - df: Full DataFrame containing features, dates, and the VN100 universe.
+    - current_portfolio: List of stock symbols currently held (e.g., ['VNM', 'FPT']).
     - features: List of feature column names.
     - use_mega: Boolean flag to switch between XGBoost (False) and LSTM (True).
-    - top_n: Number of stocks to return.
+    - buy_n: Top N stocks targeted for new entries.
+    - hold_n: Grace band; keep holding an existing stock as long as it ranks <= hold_n.
+    - trend_filter_col: Column name for the trend filter (e.g., dist_SMA_50).
+    - trend_filter_threshold: Stock must have a trend value > this to be bought.
     - target_col: The column used for training the ranker.
     
     Returns:
-    - List of top N symbols to buy.
-    - DataFrame containing the scores for all evaluated stocks on the latest date.
+    - buy_list: Symbols to buy.
+    - hold_list: Symbols to keep holding.
+    - sell_list: Symbols to sell.
+    - not_vn100_list: Symbols held but no longer in today's VN100 dataset.
+    - ranked_today: DataFrame containing today's scores and ranks.
     """
     
-    # 1. Identify the "Current" Date (The day you want to trade)
+    # 1. Identify "Today"
     latest_date = df['date'].max()
     
-    # 2. Split Data: Train on history, Predict on today
-    # We drop NaN targets in train_df to avoid training on incomplete historical data
+    # 2. Split Data
     train_df = df[(df['date'] < latest_date) & (df[target_col].notna())].copy()
     inference_df = df[df['date'] == latest_date].copy()
     
     if inference_df.empty:
         raise ValueError(f"No data available for inference on {latest_date}")
 
-    # 3. Model Training & Scoring Pipeline
+    # <-- NEW: Extract the current VN100 universe directly from today's data
+    current_vn100 = inference_df['Symbol'].unique().tolist()
+
+    # 3. Model Training & Scoring
     if not use_mega:
-        # --- BASELINE: XGBoost ---
-        print(f"Training Baseline XGBoost on data up to {train_df['date'].max().date()}...")
-        
+        print(f"Training Baseline XGBoost up to {train_df['date'].max().date()}...")
         X_train = train_df[features]
         y_train = train_df[target_col]
+        qid_train = train_df['qid']
+        model = xgb.XGBRanker(**md.base_model())
+        model.fit(X_train, y_train, qid=qid_train)
         
-        # Initialize and fit
-        model = xgb.XGBRanker(objective='rank:pairwise', random_state=42, n_estimators=100)
-        model.fit(X_train, y_train)
-        
-        # Predict scores for today
         X_inference = inference_df[features]
         inference_df['live_score'] = model.predict(X_inference)
         
     else:
-        # --- ADVANCED: LSTM (Mega Alpha) ---
-        print(f"Training Sequence-Based LSTM on data up to {train_df['date'].max().date()}...")
-        
-        # NOTE: You will need to replace these placeholder functions with your actual 
-        # PyTorch/TensorFlow training and prediction logic from your research implementation.
-        # LSTM requires sequential formatting, so pass the whole dataframe if your 
-        # internal functions handle the sequence rolling.
-        
-        # Example pseudo-code for your LSTM integration:
+        print(f"Training Sequence-Based LSTM up to {train_df['date'].max().date()}...")
         # mega_model = train_mega_lstm(train_df, features, target_col)
         # inference_df['live_score'] = predict_mega_lstm(mega_model, df, latest_date, features)
-        
-        pass # Remove this 'pass' once you plug in your LSTM calls
+        pass # Placeholder for your LSTM logic
 
-    # 4. Rank and Extract Top N
-    # Sort descending (highest score = best rank)
-    ranked_today = inference_df.sort_values(by='live_score', ascending=False)
+    # 4. Rank Today's Stocks
+    ranked_today = inference_df.sort_values(by='live_score', ascending=False).copy()
+    # Explicitly calculate integer ranks (1 = best score)
+    ranked_today['rank'] = ranked_today['live_score'].rank(ascending=False, method='first').astype(int)
     
-    top_stocks = ranked_today.head(top_n)['Symbol'].tolist()
+    # Create quick lookups for our logic
+    rank_dict = dict(zip(ranked_today['Symbol'], ranked_today['rank']))
     
-    print(f"--- Paper Trading Signals for {latest_date.date()} ---")
-    print(f"Target Strategy: {'LSTM (Mega)' if use_mega else 'XGBoost (Baseline)'}")
-    print(f"Top {top_n} Buys: {top_stocks}")
+    has_trend_filter = trend_filter_col and trend_filter_col in ranked_today.columns
+    if has_trend_filter:
+        trend_dict = dict(zip(ranked_today['Symbol'], ranked_today[trend_filter_col]))
+    else:
+        trend_dict = {}
+
+    sell_list = []
+    hold_list = []
+    buy_list = []
+    not_vn100_list = []
+
+    # 5. Evaluate Current Portfolio (SELL vs HOLD based on grace band)
+    for sym in current_portfolio:
+        # <-- NEW: Check against the dynamically extracted VN100 list
+        if sym not in current_vn100:
+            not_vn100_list.append(sym)
+            continue  # Skip further rank checking, move to the next stock
+            
+        stock_rank = rank_dict.get(sym)
+        
+        # We technically won't hit this None check often now because we already filtered 
+        # out symbols not in current_vn100, but it's good defensive programming.
+        if stock_rank is None:
+            sell_list.append(sym)
+        elif stock_rank > hold_n:
+            # Fell out of the grace band (e.g., ranked 16th, threshold is 15)
+            sell_list.append(sym)
+        else:
+            # Still in the top hold_n, keep it
+            hold_list.append(sym)
+
+    # 6. Determine Target Buys (Based on top_n and trend filter)
+    top_candidates = ranked_today.head(buy_n)['Symbol'].tolist()
     
-    return top_stocks, ranked_today[['Symbol', 'live_score']]
+    for sym in top_candidates:
+        # Skip if we already own it (it's already in the hold_list)
+        if sym in current_portfolio:
+            continue
+            
+        # Apply the trend filter (e.g., must be trading above its 50-day SMA)
+        if has_trend_filter:
+            trend_val = trend_dict.get(sym, 0)
+            if trend_val <= trend_filter_threshold:
+                continue # Fails the trend filter, skip buying
+                
+        # If it passes all checks, it's a valid new buy
+        buy_list.append(sym)
+        
+    # 7. Print Summary
+    print(f"\n--- Paper Trading Signals for {latest_date.date()} ---")
+    print(f"Strategy: {'LSTM (Mega)' if use_mega else 'XGBoost (Baseline)'}")
+    print(f"SELL ({len(sell_list)}): {sell_list}")
+    print(f"HOLD ({len(hold_list)}): {hold_list} (Grace band <= {hold_n})")
+    print(f"BUY  ({len(buy_list)}): {buy_list} (Strict top <= {buy_n} + Trend > {trend_filter_threshold})")
+    if not_vn100_list:
+        print(f"NOT VN100 ({len(not_vn100_list)}): {not_vn100_list} (Held but missing from today's data)")
+    
+    return buy_list, hold_list, sell_list, not_vn100_list, ranked_today[['Symbol', 'live_score', 'rank']]
+
+
+def get_actionable_portfolio_lists(
+    df: pd.DataFrame, 
+    current_portfolio: list, 
+    features: list, 
+    **kwargs
+) -> dict:
+    """
+    Wrapper function that calls generate_paper_trade_signals and formats 
+    the output into a clean dictionary for the user or UI.
+    """
+    buys, holds, sells, non_vn100, ranks_df = generate_paper_trade_signals(
+        df=df, 
+        current_portfolio=current_portfolio, 
+        features=features, 
+        **kwargs
+    )
+    
+    return {
+        "BUY": buys,
+        "HOLD": holds,
+        "SELL": sells,
+        "NOT_VN100": non_vn100,
+        "Rankings": ranks_df
+    }

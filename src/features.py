@@ -86,7 +86,7 @@ def build_features(df):
     df = rsi(df)
     
     feature_cols = [col for col in df.columns if col not in ['Symbol', 'date', 'close', 'high', 'low', 'open', 'volume']]
-    
+    df[feature_cols] = df[feature_cols].replace([np.inf, -np.inf], np.nan)
     df.dropna(subset=feature_cols, inplace=True)
     
     df['next_1m_ret'] = df.groupby('Symbol')['close'].transform(lambda x: np.log(x.shift(-21) / x))

@@ -14,7 +14,7 @@ import os
 from src.features import build_features, target_generating_ranking
 from src.evaluation import run_xgboost_backtest
 from src.models import walk_forward_cv
-
+from src.inference import generate_paper_trade_signals 
 st.set_page_config(page_title="VN100 Backtest Dashboard", layout="wide")
 
 @st.cache_data
@@ -22,7 +22,46 @@ def load_data(file_path):
     if os.path.exists(file_path):
         return pd.read_parquet(file_path)
     return None
-
+def display_portfolio_signals_ui(df, current_portfolio, features):
+    """
+    Streamlit UI component to display Buy/Hold/Sell/Not_VN100 lists beautifully.
+    """
+    st.divider()
+    st.subheader("🎯 Actionable Paper Trading Signals (Today)")
+    
+    with st.spinner("Calculating live market signals..."):
+        try:
+            buys, holds, sells, non_vn100, ranks = generate_paper_trade_signals(
+                df=df,
+                current_portfolio=current_portfolio,
+                features=features
+            )
+            
+            # Create 4 columns for the lists
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.success(f"🟢 **BUY** ({len(buys)})")
+                st.write(", ".join(buys) if buys else "None")
+                
+            with col2:
+                st.info(f"🔵 **HOLD** ({len(holds)})")
+                st.write(", ".join(holds) if holds else "None")
+                
+            with col3:
+                st.warning(f"🟠 **SELL** ({len(sells)})")
+                st.write(", ".join(sells) if sells else "None")
+                
+            with col4:
+                st.error(f"🔴 **NOT VN100** ({len(non_vn100)})")
+                st.write(", ".join(non_vn100) if non_vn100 else "None")
+                
+            # Optional: Show the actual dataset of rankings in a dropdown
+            with st.expander("📊 View Full Model Rankings for Today"):
+                st.dataframe(ranks.set_index("rank"), use_container_width=True)
+                
+        except Exception as e:
+            st.error(f"Could not generate signals: {e}")
 # --- INITIALIZE SESSION STATE ---
 if "backtest_run" not in st.session_state:
     st.session_state.backtest_run = False
@@ -44,13 +83,51 @@ mode = st.sidebar.selectbox(
     "Choose Backtest Mode:",
     ["Use Pretrained Model", "Train via Walk-Forward CV"]
 )
+user_portfolio_input = st.sidebar.text_input("Enter your current portfolio (comma separated):", "VNM, FPT, HPG, XYZ")
+current_portfolio = [sym.strip().upper() for sym in user_portfolio_input.split(",") if sym.strip()] 
+
+# 1. Add the Button right under the input
+show_signals_clicked = st.sidebar.button("🎯 Get Today's Signals")
 
 best_features = [
-    'log_ret_1m', 'log_ret_3m', 'log_ret_1y',      # Momentum
-    'volatility_shock_monthly', 'volatility_3m',   # Risk
-    'dist_SMA_100',                                # Fast Trend
+    'log_ret_1m', 'log_ret_3m', 'log_ret_1y',      
+    'volatility_shock_monthly', 'volatility_3m',   
+    'dist_SMA_100',                                
     'RSI_14','volume_surge_monthly'
 ]
+
+df = load_data(DATA_PATH)
+df = build_features(df)
+df = target_generating_ranking(df)
+
+# 2. If the button is clicked, generate and display right below it in the sidebar
+if show_signals_clicked:
+    # Ensure you are importing the base function directly
+    
+    
+    with st.sidebar:
+        st.divider()
+        with st.spinner("Calculating signals..."):
+            try:
+                buys, holds, sells, non_vn100, ranks = generate_paper_trade_signals(
+                    df=df,
+                    current_portfolio=current_portfolio,
+                    features=best_features,
+                    trend_filter_col='dist_SMA_100',
+                    target_col='target_quintile'
+                )
+                
+                # Stack them vertically so they fit nicely in the sidebar
+                st.success(f"🟢 **BUY ({len(buys)})**\n\n{', '.join(buys) if buys else 'None'}")
+                st.info(f"🔵 **HOLD ({len(holds)})**\n\n{', '.join(holds) if holds else 'None'}")
+                st.warning(f"🟠 **SELL ({len(sells)})**\n\n{', '.join(sells) if sells else 'None'}")
+                
+                if non_vn100:
+                    st.error(f"🔴 **NOT VN100 ({len(non_vn100)})**\n\n{', '.join(non_vn100)}")
+                
+            except Exception as e:
+                st.error(f"Could not generate signals: {e}")
+        st.divider()
 use_mega_alpha = False
 if mode == "Use Pretrained Model":
     selected_features = best_features

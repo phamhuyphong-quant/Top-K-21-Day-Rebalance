@@ -123,7 +123,7 @@ def update_market_data(file_path, symbols, start_date="2018-01-01", batch_size=5
                     else:
                         print(f"! No new data for {company}")
                     
-                    time.sleep(0.6)
+                    time.sleep(3)
                     break
 
                 except Exception as e:

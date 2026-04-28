@@ -6,3 +6,4 @@ data/
 .streamlit/secrets.toml
 .venv/
 src.rar
+test.ipynb
