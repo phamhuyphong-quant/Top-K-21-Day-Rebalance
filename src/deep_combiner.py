@@ -19,11 +19,8 @@ class DynamicAlphaCombiner(nn.Module):
     def forward(self, alphas_seq):
         # alphas_seq có dạng: [Batch, Time_1_to_T, Alpha_1_to_K]
         
-        # 1. Trích xuất bối cảnh thời gian
-        lstm_out, _ = self.context_lstm(alphas_seq)
-        
-        # Lấy trạng thái ở bước thời gian cuối cùng T
-        _, (h_n, _) = self.context_lstm(alphas_seq)
+        lstm_out, (h_n, _) = self.context_lstm(alphas_seq)
+
         context_vector = h_n[-1]
         
         # 2. Tính toán trọng số động
