@@ -5,10 +5,9 @@ import matplotlib.pyplot as plt
 import os
 import google.generativeai as genai
 import sys
-import streamlit as st
-import pandas as pd
-import xgboost as xgb
-import os
+import requests
+import io
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 # Standardized Absolute Imports
 from src.features import build_features, target_generating_ranking
@@ -18,17 +17,27 @@ from src.inference import generate_paper_trade_signals
 st.set_page_config(page_title="VN100 Backtest Dashboard", layout="wide")
 
 @st.cache_data
-@st.cache_data(ttl="1d") # Tells Streamlit to refresh this data once a day
+@st.cache_data(ttl="1d")
 def load_data():
-    # Try to get the fresh data from the automated robot first
-    url = "https://github.com/Masterokadanori/Cross_Sectional_Rank_VN100/releases/download/latest-data/market_data.parquet"
+    
+    
+    
+    # This URL points specifically to your storage branch
+    url = "https://raw.githubusercontent.com/Masterokadanori/Cross_Sectional_Rank_VN100/data-storage/market_data.parquet"
+    
+    # Pass your secret token so GitHub knows you have permission
+    headers = {"Authorization": f"token {st.secrets['GITHUB_TOKEN']}"}
     
     try:
-        df = pd.read_parquet(url)
-        return df
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            # Successfully fetched the parquet as bytes
+            return pd.read_parquet(io.BytesIO(response.content))
+        else:
+            raise Exception(f"GitHub Error {response.status_code}: {response.text}")
     except Exception as e:
-        # If the URL fails (e.g., the robot hasn't run yet), use the local seed data
-        st.warning("⚠️ Could not fetch today's live data. Using local seed data instead.")
+        # Fallback to local data if the internet or token fails
+        st.warning(f"⚠️ Live fetch failed. Using local seed data. Error: {e}")
         return pd.read_parquet("data/market_data.parquet")
 def display_portfolio_signals_ui(df, current_portfolio, features):
     """

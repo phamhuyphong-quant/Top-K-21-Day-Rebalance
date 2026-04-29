@@ -1,45 +1,53 @@
 name: Daily VN100 Data Update
 
-# 1. THE TRIGGER: When should the robot run?
 on:
   schedule:
-    # Runs at 10:00 AM UTC (5:00 PM Vietnam Time) every Monday through Friday
+    # Runs at 10:00 AM UTC (5:00 PM Vietnam Time) Mon-Fri
     - cron: '0 10 * * 1-5'
-  workflow_dispatch: # Allows you to click a button on GitHub to run it manually
+  workflow_dispatch: # Manual trigger button
 
 jobs:
   update-data:
     runs-on: ubuntu-latest
-    
-    # Give the robot permission to upload files to your repository's Releases
     permissions:
       contents: write
 
     steps:
-      - name: 📥 Checkout Repository
+      - name: 📥 Checkout Code (Main Branch)
         uses: actions/checkout@v4
+        with:
+          ref: main
 
       - name: 🐍 Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11' # Matches a stable environment
+          python-version: '3.11'
 
       - name: 📦 Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          # We only need the data collection libraries for this runner
           pip install vnstock pandas pyarrow
 
-      - name: ⚙️ Run Data Collection Script
+      - name: ⚙️ Run Data Collection
         run: |
           python src/data_collect.py
 
-      - name: 🚀 Upload to GitHub Releases
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: latest-data # This tag will be overwritten daily
-          name: "Daily VN100 Market Data"
-          files: data/market_data.parquet
-          body: "Automated daily update of VN100 cross-sectional market data."
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: 🚀 Push to Storage Branch
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          
+          # 1. Stash the fresh data so it doesn't get wiped during checkout
+          mv data/market_data.parquet ../market_data_temp.parquet
+          
+          # 2. Switch to the data-storage branch
+          git fetch origin data-storage
+          git checkout data-storage
+          
+          # 3. Bring the fresh data back and overwrite the old one at the root
+          mv ../market_data_temp.parquet market_data.parquet
+          
+          # 4. Commit and push
+          git add market_data.parquet
+          git commit -m "data: automated market update $(date +'%Y-%m-%d')" || echo "No changes"
+          git push origin data-storage
