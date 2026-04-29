@@ -1,0 +1,85 @@
+name: Precompute Model Artifacts
+
+on:
+  workflow_run:
+    workflows: ["Daily VN100 Data Update"]
+    types:
+      - completed
+  workflow_dispatch: # Allows you to trigger this manually from the Actions tab
+
+jobs:
+  precompute:
+    runs-on: ubuntu-latest
+    # CRITICAL: Required to allow the bot to push code back to the repo
+    permissions:
+      contents: write
+    # Run only if triggered manually OR if the upstream data update was successful
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    
+    steps:
+      # Step 1: Checkout main branch code
+      - name: Checkout main branch
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      # Step 2: Fetch the latest data from data-storage branch
+      - name: Checkout data-storage branch to subfolder
+        uses: actions/checkout@v4
+        with:
+          ref: data-storage
+          path: data-storage-branch
+
+      - name: Copy market_data.parquet to working directory
+        run: |
+          mkdir -p data
+          cp data-storage-branch/market_data.parquet data/market_data.parquet
+          # Clean up the branch folder to avoid confusion
+          rm -rf data-storage-branch
+
+      # Step 3: Set up Python 3.11
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Step 4: Install required dependencies using requirements.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # Step 5: Execute the precompute script
+      - name: Run precomputation pipeline
+        run: python scripts/precompute.py
+
+      # Step 6: Temporarily store the generated outputs
+      - name: Stash output artifacts in temp folder
+        run: |
+          mkdir -p /tmp/pretrained_artifacts
+          cp data/pretrained/pretrained_predictions.parquet /tmp/pretrained_artifacts/
+          cp data/pretrained/pretrained_equity_curve.parquet /tmp/pretrained_artifacts/
+
+      # Step 7: Checkout data-storage branch for publishing
+      - name: Checkout data-storage branch for publishing
+        uses: actions/checkout@v4
+        with:
+          ref: data-storage
+          clean: true # Ensures a fresh workspace on the data branch
+
+      # Step 8: Commit and push the artifacts back to data-storage
+      - name: Commit and push to data-storage
+        run: |
+          # Move files from temp into the root of data-storage
+          cp /tmp/pretrained_artifacts/pretrained_predictions.parquet .
+          cp /tmp/pretrained_artifacts/pretrained_equity_curve.parquet .
+          
+          # Setup Git config for the Actions bot
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          
+          # Add, commit, and push
+          git add pretrained_predictions.parquet pretrained_equity_curve.parquet
+          # Using || echo to prevent failure if the files haven't changed since last run
+          git commit -m "data: automated precompute update $(date)" || echo "No new changes to commit"
+          git push origin data-storage
