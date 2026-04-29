@@ -9,3 +9,4 @@ optuna
 streamlit
 google-generativeai
 gplearn
+torch
