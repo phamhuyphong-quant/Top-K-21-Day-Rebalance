@@ -32,22 +32,22 @@ jobs:
         run: |
           python src/data_collect.py
 
-      - name: 🚀 Push to Storage Branch
+      - name: 🚀 Push Data to Storage Branch
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           
-          # 1. Stash the fresh data so it doesn't get wiped during checkout
+          # 1. Move the fresh data to a safe spot OUTSIDE the repo folder
           mv data/market_data.parquet ../market_data_temp.parquet
           
-          # 2. Switch to the data-storage branch
+          # 2. Fetch and switch to the storage branch
           git fetch origin data-storage
           git checkout data-storage
           
-          # 3. Bring the fresh data back and overwrite the old one at the root
+          # 3. Move the fresh data back into the root of this branch
           mv ../market_data_temp.parquet market_data.parquet
           
           # 4. Commit and push
           git add market_data.parquet
-          git commit -m "data: automated market update $(date +'%Y-%m-%d')" || echo "No changes"
+          git diff --cached --quiet && echo "No changes" || git commit -m "data: automated market update $(date +'%Y-%m-%d')"
           git push origin data-storage
