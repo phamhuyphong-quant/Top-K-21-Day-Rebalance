@@ -1,6 +1,10 @@
 
 import matplotlib.pyplot as plt
 import pandas as pd
+import os
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from src.models import walk_forward_cv
 def feature_influence(model, features):
     importances = pd.Series(model.feature_importances_, index=features).sort_values()
     importances.plot(kind='barh', title='What drives the ranking?')
@@ -404,3 +408,52 @@ def plot_model_comparison(res_base, res_lstm):
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.show()
+
+def generate_and_save_pretrained_model(df, selected_features, use_mega_alpha=False, output_dir="data/pretrained/"):
+    """
+    Runs the heavy walk-forward CV and backtest once, saving the artifacts 
+    so the Streamlit app can load them instantly.
+    """
+    print("🚀 Starting Pre-training Walk-Forward CV...")
+    
+    # Ensure output directory exists
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # 1. Run the heavy Walk-Forward CV
+    honest_test_df = walk_forward_cv(
+        df=df, 
+        features=selected_features, 
+        initial_train_months=24, 
+        test_months=6, 
+        gap_days=21,
+        callback=lambda f, t, m: print(f"Fold {f}/{t}: {m}"), # Simple console callback
+        use_mega=use_mega_alpha
+    )
+    
+    # 2. Run the Backtest logic to get the Equity Curve
+    print("📈 Running Backtest on OOS results...")
+    result = run_xgboost_backtest(
+        honest_test_df, 
+        model=None, 
+        features=selected_features,
+        buy_fraction=0.05,
+        hold_fraction=0.15,
+        time_of_rebalance='M', 
+        trailing_stop=-0.10
+    )
+    
+    # 3. Save the critical artifacts to Parquet (much faster than CSV)
+    predictions_path = os.path.join(output_dir, "pretrained_predictions.parquet")
+    equity_curve_path = os.path.join(output_dir, "pretrained_equity_curve.parquet")
+    
+    # We only need to save the columns app.py actually uses to save space!
+    cols_to_save = ['date', 'Symbol', 'next_1m_ret', 'pred_score', 'pred_quintile'] + selected_features
+    # Ensure we only try to save columns that actually exist in the dataframe
+    cols_to_save = [c for c in cols_to_save if c in honest_test_df.columns]
+    
+    honest_test_df[cols_to_save].to_parquet(predictions_path, index=False)
+    result[['date', 'total_value']].to_parquet(equity_curve_path, index=False)
+    
+    print(f"✅ Success! Artifacts saved to {output_dir}")
+    return predictions_path, equity_curve_path
+
