@@ -18,10 +18,18 @@ from src.inference import generate_paper_trade_signals
 st.set_page_config(page_title="VN100 Backtest Dashboard", layout="wide")
 
 @st.cache_data
-def load_data(file_path):
-    if os.path.exists(file_path):
-        return pd.read_parquet(file_path)
-    return None
+@st.cache_data(ttl="1d") # Tells Streamlit to refresh this data once a day
+def load_data():
+    # Try to get the fresh data from the automated robot first
+    url = "https://github.com/Masterokadanori/Cross_Sectional_Rank_VN100/releases/download/latest-data/market_data.parquet"
+    
+    try:
+        df = pd.read_parquet(url)
+        return df
+    except Exception as e:
+        # If the URL fails (e.g., the robot hasn't run yet), use the local seed data
+        st.warning("⚠️ Could not fetch today's live data. Using local seed data instead.")
+        return pd.read_parquet("data/market_data.parquet")
 def display_portfolio_signals_ui(df, current_portfolio, features):
     """
     Streamlit UI component to display Buy/Hold/Sell/Not_VN100 lists beautifully.
@@ -96,7 +104,7 @@ best_features = [
     'RSI_14','volume_surge_monthly'
 ]
 
-df = load_data(DATA_PATH)
+df = load_data()
 df = build_features(df)
 df = target_generating_ranking(df)
 
@@ -153,7 +161,7 @@ if st.sidebar.button("🚀 Run Backtest"):
 
 # --- MAIN EXECUTION ---
 if st.session_state.backtest_run:
-    df_raw = load_data(DATA_PATH)
+    df_raw = load_data()
     
     if df_raw is None:
         st.error(f"Dataset not found at {DATA_PATH}")
