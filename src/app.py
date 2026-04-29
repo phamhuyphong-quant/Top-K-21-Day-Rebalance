@@ -4,12 +4,12 @@ import xgboost as xgb
 import matplotlib.pyplot as plt
 import os
 import google.generativeai as genai
-
+import sys
 import streamlit as st
 import pandas as pd
 import xgboost as xgb
 import os
-
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 # Standardized Absolute Imports
 from src.features import build_features, target_generating_ranking
 from src.evaluation import run_xgboost_backtest
