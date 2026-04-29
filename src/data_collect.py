@@ -216,3 +216,27 @@ def fetch_indicator_data(ind_symbol, start_date, file_path):
             
     except Exception as e:
         print(f"Error fetching {ind_symbol}: {e}")
+
+
+if __name__ == "__main__":
+    import os
+    
+    # Define where the data should be saved
+    # The GitHub Action expects it in data/market_data.parquet
+    SAVE_PATH = "data/market_data.parquet"
+    
+    print("🤖 Robot starting data collection...")
+    
+    # 1. Get the current list of VN100 symbols
+    # This ensures we pick up any new symbols added to the index
+    vn100_symbols = build_vn100()
+    
+    # 2. Run the update function
+    # This will fetch only the missing dates (delta) up to today
+    update_market_data(
+        file_path=SAVE_PATH, 
+        symbols=vn100_symbols,
+        start_date="2018-01-01"
+    )
+    
+    print(f"✅ Success! Data saved to {SAVE_PATH}")

@@ -1,0 +1,45 @@
+name: Daily VN100 Data Update
+
+# 1. THE TRIGGER: When should the robot run?
+on:
+  schedule:
+    # Runs at 10:00 AM UTC (5:00 PM Vietnam Time) every Monday through Friday
+    - cron: '0 10 * * 1-5'
+  workflow_dispatch: # Allows you to click a button on GitHub to run it manually
+
+jobs:
+  update-data:
+    runs-on: ubuntu-latest
+    
+    # Give the robot permission to upload files to your repository's Releases
+    permissions:
+      contents: write
+
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11' # Matches a stable environment
+
+      - name: 📦 Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # We only need the data collection libraries for this runner
+          pip install vnstock pandas pyarrow
+
+      - name: ⚙️ Run Data Collection Script
+        run: |
+          python src/data_collect.py
+
+      - name: 🚀 Upload to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest-data # This tag will be overwritten daily
+          name: "Daily VN100 Market Data"
+          files: data/market_data.parquet
+          body: "Automated daily update of VN100 cross-sectional market data."
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
