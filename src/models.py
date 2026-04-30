@@ -41,16 +41,32 @@ def test_train_spliter(df, test_start, features):
 
 def base_model():
     return {
+
         'tree_method': 'hist',
-        'objective': 'rank:ndcg', 
+
+        'objective': 'rank:ndcg',
+
         'n_estimators': 100,
+
         'learning_rate': 0.1,
+
         'max_depth': 4,
+
         'colsample_bytree': 0.7,
+
         'subsample': 0.8,
+
         'random_state': 42,
+
         #'lambdarank_pair_method': 'topk',
+
+        #'nthread' : 1,
+
+        #'n_jobs' : 1
+
         #'lambdarank_num_pair_per_sample':10
+
+
 
     }
 def alpha_model():

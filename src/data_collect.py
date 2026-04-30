@@ -104,7 +104,7 @@ def update_market_data(file_path, symbols, start_date="2018-01-01", batch_size=5
                         # --- CLEANING DATA ---
                         df = df.rename(columns={"time": "date"})
                         df["Symbol"] = str(company)
-                        
+                        df = df[df["close"] > 0].copy()
                         # 1. Standardize date (keeps it compatible with Parquet)
                         df["date"] = pd.to_datetime(df["date"], errors='coerce').dt.normalize().dt.tz_localize(None)
                         

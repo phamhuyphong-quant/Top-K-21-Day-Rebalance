@@ -11,12 +11,12 @@ import io
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 # Standardized Absolute Imports
 from src.features import build_features, target_generating_ranking
-from src.evaluation import run_xgboost_backtest
-from src.models import walk_forward_cv
+
+
 from src.inference import generate_paper_trade_signals 
 st.set_page_config(page_title="VN100 Backtest Dashboard", layout="wide")
 
-@st.cache_data
+
 @st.cache_data(ttl="1d")
 def load_data():
     
@@ -39,6 +39,40 @@ def load_data():
         # Fallback to local data if the internet or token fails
         st.warning(f"⚠️ Live fetch failed. Using local seed data. Error: {e}")
         return pd.read_parquet("data/market_data.parquet")
+    
+
+@st.cache_data(ttl="1d")
+def load_pretrained():
+    """
+    Fetches the precomputed walk-forward predictions and equity curve from the data-storage branch.
+    """
+    base_url = "https://raw.githubusercontent.com/Masterokadanori/Cross_Sectional_Rank_VN100/data-storage/"
+    headers = {"Authorization": f"token {st.secrets['GITHUB_TOKEN']}"}
+    
+    try:
+        # Fetch Predictions
+        pred_response = requests.get(base_url + "pretrained_predictions.parquet", headers=headers)
+        if pred_response.status_code == 200:
+            honest_test_df = pd.read_parquet(io.BytesIO(pred_response.content))
+        else:
+            raise Exception(f"GitHub Error (Predictions): {pred_response.status_code}")
+            
+        # Fetch Equity Curve
+        eq_response = requests.get(base_url + "pretrained_equity_curve.parquet", headers=headers)
+        if eq_response.status_code == 200:
+            result = pd.read_parquet(io.BytesIO(eq_response.content))
+        else:
+            raise Exception(f"GitHub Error (Equity Curve): {eq_response.status_code}")
+            
+        return honest_test_df, result
+        
+    except Exception as e:
+        st.warning(f"⚠️ Live fetch of precomputed models failed. Using local artifacts. Error: {e}")
+        # Fallback to local files if API/Internet fails
+        honest_test_df = pd.read_parquet("data/pretrained/pretrained_predictions.parquet")
+        result = pd.read_parquet("data/pretrained/pretrained_equity_curve.parquet")
+        return honest_test_df, result
+
 def display_portfolio_signals_ui(df, current_portfolio, features):
     """
     Streamlit UI component to display Buy/Hold/Sell/Not_VN100 lists beautifully.
@@ -96,10 +130,7 @@ DATA_PATH = "data/market_data.parquet"
 # --- SIDEBAR CONFIGURATION ---
 st.sidebar.header("Strategy Settings")
 
-mode = st.sidebar.selectbox(
-    "Choose Backtest Mode:",
-    ["Use Pretrained Model", "Train via Walk-Forward CV"]
-)
+
 user_portfolio_input = st.sidebar.text_input("Enter your current portfolio (comma separated):", "VNM, FPT, HPG, XYZ")
 current_portfolio = [sym.strip().upper() for sym in user_portfolio_input.split(",") if sym.strip()] 
 
@@ -107,13 +138,13 @@ current_portfolio = [sym.strip().upper() for sym in user_portfolio_input.split("
 show_signals_clicked = st.sidebar.button("🎯 Get Today's Signals")
 
 best_features = [
-    'log_ret_1m', 'log_ret_3m', 'log_ret_1y',      
-    'volatility_shock_monthly', 'volatility_3m',   
-    'dist_SMA_100',                                
-    'RSI_14','volume_surge_monthly'
+    'log_ret_1y', 'log_ret_1m', 'log_ret_3m',
+    'volatility_shock_monthly', 'volatility_3m',
+    'dist_SMA_100', 'RSI_14'
 ]
 
 df = load_data()
+df = df[df["close"] > 0].copy()
 df = build_features(df)
 df = target_generating_ranking(df)
 
@@ -146,75 +177,24 @@ if show_signals_clicked:
                 st.error(f"Could not generate signals: {e}")
         st.divider()
 use_mega_alpha = False
-if mode == "Use Pretrained Model":
-    selected_features = best_features
-    st.sidebar.info("Using the optimized 8 features to reproduce the pretrained model's Walk-Forward results.")
-else:
-    all_available_features = [
-    'log_ret_1m', 'log_ret_3m', 'log_ret_6m',  'log_ret_1y',
-    'volatility_shock_monthly', 'volatility_3m', 'volatility_6m', 'volatility_1m' ,   'volatility_1w' , 
-    'dist_SMA_100', 'dist_SMA_14','dist_SMA_50'    ,                     
-    'RSI_14','volume_surge_monthly', 'vol_3m_avg'
-]
-    selected_features = st.sidebar.multiselect(
-        "Select Features:", 
-        all_available_features, 
-        default=best_features
-    )
-    
-    # THÊM NÚT KÍCH HOẠT MEGA-ALPHA
-    use_mega_alpha = st.sidebar.checkbox("🔥 Kích hoạt Mega-Alpha (LSTM-Attention)", value=False)
+selected_features = best_features
+
 
 if st.sidebar.button("🚀 Run Backtest"):
     st.session_state.backtest_run = True
 
 # --- MAIN EXECUTION ---
 if st.session_state.backtest_run:
-    df_raw = load_data()
-    
-    if df_raw is None:
-        st.error(f"Dataset not found at {DATA_PATH}")
-    else:
-        with st.spinner("Processing features..."):
-            df = df_raw[df_raw["close"] > 0].copy()
-            df = build_features(df)
-            df = target_generating_ranking(df)
-
-            missing_features = [f for f in selected_features if f not in df.columns]
-            if missing_features:
-                st.error(f"⚠️ WARNING: These features are missing from your dataset: {missing_features}. Check your features.py file!")
-                selected_features = [f for f in selected_features if f in df.columns]
-
-        # --- WALK-FORWARD CV ---
-        st.subheader(f"Walk-Forward CV Progress ({mode})")
-        progress_bar = st.progress(0)
-        status_log = st.empty()
-        all_messages = []
-
-        def streamlit_callback(fold_num, total_folds, msg):
-            all_messages.append(msg)
-            status_log.code("\n".join(all_messages))
-            #progress_bar.progress(fold_num / total_folds)
-            progress_bar.progress(
-                min(fold_num / total_folds, 1.0),  # clamp to avoid > 1.0 error
-                text=f"Fold {fold_num}/{total_folds} complete"
-                )
-        honest_test_df = walk_forward_cv(
-            df, selected_features, 
-            initial_train_months=24, test_months=6, gap_days=21,
-            callback=streamlit_callback,
-            use_mega=use_mega_alpha
-        )
-        progress_bar.progress(1.0, text="✅ Walk-forward CV complete!")
-        with st.spinner("Backtesting OOS results..."):
-            result = run_xgboost_backtest(
-                honest_test_df, model=None, features=selected_features,buy_fraction=0.05,hold_fraction=0.15,
-                time_of_rebalance='M', trailing_stop=-0.10
-            )
+    with st.spinner("Loading precomputed model artifacts..."):
+        try:
+            honest_test_df, result = load_pretrained()
+        except Exception as e:
+            st.error(f"Failed to load artifacts: {e}")
+            st.stop()
 
         # --- VISUALIZATION: EQUITY CURVE ---
         st.divider()
-        st.subheader(f"Results: {mode}")
+        st.subheader(f"Results:")
         
         fig1, ax1 = plt.subplots(figsize=(12, 6))
         ax1.plot(pd.to_datetime(result['date']), result['total_value'], 
@@ -313,7 +293,7 @@ if st.session_state.backtest_run:
             col3.metric("Lift over Market",   f"{lift*100:.2f}%",       help="Top-20% return minus average market return")
 
 else:
-    st.info("Select your strategy in the sidebar and click 'Run Backtest'.")
+    st.info("Click 'Run Backtest' in the sidebar.")
 
 
 # =========================================================================================

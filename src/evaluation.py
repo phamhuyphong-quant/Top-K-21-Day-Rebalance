@@ -427,7 +427,8 @@ def generate_and_save_pretrained_model(df, selected_features, use_mega_alpha=Fal
         test_months=6, 
         gap_days=21,
         callback=lambda f, t, m: print(f"Fold {f}/{t}: {m}"), # Simple console callback
-        use_mega=use_mega_alpha
+        use_mega=False,
+        use_gp=False
     )
     
     # 2. Run the Backtest logic to get the Equity Curve
@@ -435,11 +436,12 @@ def generate_and_save_pretrained_model(df, selected_features, use_mega_alpha=Fal
     result = run_xgboost_backtest(
         honest_test_df, 
         model=None, 
-        features=selected_features,
+        features=None,
+        initial_capital=10000,
         buy_fraction=0.05,
         hold_fraction=0.15,
         time_of_rebalance='M', 
-        trailing_stop=-0.10
+        trend_filter_col='dist_SMA_100'
     )
     
     # 3. Save the critical artifacts to Parquet (much faster than CSV)
