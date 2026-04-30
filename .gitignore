@@ -6,3 +6,4 @@ venv/
 .venv/
 src.rar
 test.ipynb
+data/

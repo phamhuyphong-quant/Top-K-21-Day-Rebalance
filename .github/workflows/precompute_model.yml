@@ -51,7 +51,7 @@ jobs:
 
       # Step 5: Execute the precompute script
       - name: Run precomputation pipeline
-        run: python scripts/precompute.py
+        run: python src/precompute.py
 
       # Step 6: Temporarily store the generated outputs
       - name: Stash output artifacts in temp folder

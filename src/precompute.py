@@ -28,11 +28,11 @@ def main():
     
     # 3. Define the optimized feature list
     best_features = [
-        'log_ret_1m', 'log_ret_3m', 'log_ret_1y',      
-        'volatility_shock_monthly', 'volatility_3m',   
-        'dist_SMA_100',                                
-        'RSI_14', 'volume_surge_monthly'
-    ]
+     'log_ret_1y','log_ret_1m','log_ret_3m',
+    'volatility_shock_monthly', 'volatility_3m',
+    'dist_SMA_100', 'RSI_14'
+    #, 'volume_surge_monthly', 
+]
     
     # Sanity check: Ensure all features were built successfully
     missing_features = [f for f in best_features if f not in df.columns]
