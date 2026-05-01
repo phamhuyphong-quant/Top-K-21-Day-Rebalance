@@ -17,47 +17,50 @@ from src.inference import generate_paper_trade_signals
 st.set_page_config(page_title="VN100 Backtest Dashboard", layout="wide")
 
 
-@st.cache_data(ttl="1d")
-def load_data():
-    
-    
-    
-    # This URL points specifically to your storage branch
+import datetime
+
+def _today_vn() -> str:
+    """Returns today's date in Vietnam time (UTC+7) as a string key like '2025-05-01'.
+    Used as a cache-buster so data is always fresh after midnight VN time."""
+    return (datetime.datetime.utcnow() + datetime.timedelta(hours=7)).strftime("%Y-%m-%d")
+
+@st.cache_data(ttl=3600)  # Re-checks every hour; date key busts cache after midnight VN time
+def load_data(_date_key: str = None):
+    """
+    Loads market data from GitHub data-storage branch.
+    The _date_key argument is today's VN date — changing it invalidates the cache
+    automatically each new day, so the app always shows the latest data.
+    """
     url = "https://raw.githubusercontent.com/Masterokadanori/Cross_Sectional_Rank_VN100/data-storage/market_data.parquet"
-    
-    # Pass your secret token so GitHub knows you have permission
     headers = {"Authorization": f"token {st.secrets['GITHUB_TOKEN']}"}
     
     try:
         response = requests.get(url, headers=headers)
         if response.status_code == 200:
-            # Successfully fetched the parquet as bytes
             return pd.read_parquet(io.BytesIO(response.content))
         else:
             raise Exception(f"GitHub Error {response.status_code}: {response.text}")
     except Exception as e:
-        # Fallback to local data if the internet or token fails
         st.warning(f"⚠️ Live fetch failed. Using local seed data. Error: {e}")
         return pd.read_parquet("data/market_data.parquet")
-    
 
-@st.cache_data(ttl="1d")
-def load_pretrained():
+
+@st.cache_data(ttl=3600)  # Same pattern — hourly TTL + date key = daily refresh
+def load_pretrained(_date_key: str = None):
     """
     Fetches the precomputed walk-forward predictions and equity curve from the data-storage branch.
+    The _date_key argument busts the cache automatically each new VN day.
     """
     base_url = "https://raw.githubusercontent.com/Masterokadanori/Cross_Sectional_Rank_VN100/data-storage/"
     headers = {"Authorization": f"token {st.secrets['GITHUB_TOKEN']}"}
     
     try:
-        # Fetch Predictions
         pred_response = requests.get(base_url + "pretrained_predictions.parquet", headers=headers)
         if pred_response.status_code == 200:
             honest_test_df = pd.read_parquet(io.BytesIO(pred_response.content))
         else:
             raise Exception(f"GitHub Error (Predictions): {pred_response.status_code}")
             
-        # Fetch Equity Curve
         eq_response = requests.get(base_url + "pretrained_equity_curve.parquet", headers=headers)
         if eq_response.status_code == 200:
             result = pd.read_parquet(io.BytesIO(eq_response.content))
@@ -68,7 +71,6 @@ def load_pretrained():
         
     except Exception as e:
         st.warning(f"⚠️ Live fetch of precomputed models failed. Using local artifacts. Error: {e}")
-        # Fallback to local files if API/Internet fails
         honest_test_df = pd.read_parquet("data/pretrained/pretrained_predictions.parquet")
         result = pd.read_parquet("data/pretrained/pretrained_equity_curve.parquet")
         return honest_test_df, result
@@ -150,7 +152,7 @@ best_features = [#'log_ret_daily',
     'volume_surge_monthly'
 ]
 
-df = load_data()
+df = load_data(_date_key=_today_vn())
 df = df[df["close"] > 0].copy()
 df = build_features(df)
 df = target_generating_ranking(df)
@@ -194,7 +196,7 @@ if st.sidebar.button("🚀 Run Backtest"):
 if st.session_state.backtest_run:
     with st.spinner("Loading precomputed model artifacts..."):
         try:
-            honest_test_df, result = load_pretrained()
+            honest_test_df, result = load_pretrained(_date_key=_today_vn())
         except Exception as e:
             st.error(f"Failed to load artifacts: {e}")
             st.stop()
