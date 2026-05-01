@@ -43,7 +43,7 @@ def base_model():
     return {
 
         'tree_method': 'hist',
-
+        'device': 'cuda',
         'objective': 'rank:ndcg',
 
         'n_estimators': 100,
@@ -112,6 +112,10 @@ def walk_forward_cv(df, features, model_params=None, initial_train_months=12,
     Hàm Walk-forward CV hoàn chỉnh. 
     Sử dụng eval_set để tối ưu hóa quá trình học của XGBoost Ranker.
     """
+    import random
+    import numpy as np
+    random.seed(42)
+    np.random.seed(42)
     df['date'] = pd.to_datetime(df['date'])
     df = df.sort_values(by=['date', 'Symbol']).copy()
     total_months = (df['date'].max().year - df['date'].min().year) * 12 + \

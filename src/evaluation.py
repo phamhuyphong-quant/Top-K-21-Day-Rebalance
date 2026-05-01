@@ -75,8 +75,60 @@ def feature_influence_ic(test_df, features, target_col='next_1m_ret'):
     plt.grid(axis='x', linestyle='--', alpha=0.7)
     plt.tight_layout()
     plt.show()
+    """
+    Calculates IC Mean, IC Std, and IC IR for each feature.
+    IC IR = Mean(Daily IC) / Std(Daily IC)
+    """
+    ic_ir_results = {}
 
+    for feat in features:
+        # 1. Calculate IC for each date (Time-series of ICs)
+        # We group by 'date' and correlate the feature with the target for that specific day
+        daily_ic = test_df.groupby('date').apply(
+            lambda x: x[feat].corr(x[target_col], method='spearman')
+        )
+        
+        # 2. Calculate Metrics
+        ic_mean = daily_ic.mean()
+        ic_std = daily_ic.std()
+        
+        # Avoid division by zero if std is 0
+        ic_ir = ic_mean / ic_std if ic_std > 0 else 0
+        
+        ic_ir_results[feat] = {
+            'IC Mean': ic_mean,
+            'IC Std': ic_std,
+            'IC IR': ic_ir
+        }
 
+    # Convert to DataFrame for easy viewing and plotting
+    ir_df = pd.DataFrame(ic_ir_results).T.sort_values(by='IC IR', ascending=True)
+    
+    # Plotting IC IR
+    plt.figure(figsize=(10, 6))
+    colors = ['#d62728' if x < 0 else '#1f77b4' for x in ir_df['IC IR']]
+    ir_df['IC IR'].plot(kind='barh', color=colors, edgecolor='black')
+    
+    plt.title('Feature Consistency (IC IR)', fontsize=14, fontweight='bold')
+    plt.xlabel('IC IR (Mean IC / Std IC)')
+    plt.grid(axis='x', linestyle='--', alpha=0.7)
+    plt.tight_layout()
+    plt.show()
+    
+    return ir_df
+
+def plot_rolling_ic_ir(test_df, feature, target_col='next_1m_ret', window=6):
+    # Calculate monthly ICs
+    monthly_ic = test_df.groupby(test_df['date'].dt.to_period('M')).apply(
+        lambda x: x[feature].corr(x[target_col], method='spearman')
+    )
+    
+    # Calculate rolling IR
+    rolling_ir = monthly_ic.rolling(window=window).mean() / monthly_ic.rolling(window=window).std()
+    
+    rolling_ir.plot(title=f'Rolling {window}-Month IC IR for {feature}')
+    plt.axhline(0, color='black', linestyle='--')
+    plt.show()
 def predicted_quintile_chart(test_df, X_test=None, ranker=None):
     """
     Vẽ biểu đồ hiệu suất. Hỗ trợ cả mô hình tĩnh (có ranker) và mô hình động (đã có pred_score).

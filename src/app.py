@@ -137,10 +137,17 @@ current_portfolio = [sym.strip().upper() for sym in user_portfolio_input.split("
 # 1. Add the Button right under the input
 show_signals_clicked = st.sidebar.button("🎯 Get Today's Signals")
 
-best_features = [
-    'log_ret_1y', 'log_ret_1m', 'log_ret_3m',
-    'volatility_shock_monthly', 'volatility_3m',
-    'dist_SMA_100', 'RSI_14'
+best_features = [#'log_ret_daily',
+                  'volatility_1w', 'volatility_1m', 'volatility_3m', 'volatility_6m',
+    #              'volatility_shock_monthly',
+    #'volatility_shock_weekly' , 
+                  'dist_SMA_100',
+    'dist_SMA_14', #'dist_SMA_50',
+                  'log_ret_1w','log_ret_1m',
+    #'log_ret_3m',
+    'log_ret_6m','log_ret_1y',
+'RSI_14',
+    'volume_surge_monthly'
 ]
 
 df = load_data()

@@ -9,6 +9,10 @@ from src.features import build_features, target_generating_ranking
 from src.evaluation import generate_and_save_pretrained_model
 
 def main():
+    import random
+    import numpy as np
+    random.seed(42)
+    np.random.seed(42)
     print("🚀 Starting precomputation pipeline...")
     
     # 1. Load the raw market data
@@ -27,11 +31,17 @@ def main():
     df = target_generating_ranking(df)
     
     # 3. Define the optimized feature list
-    best_features = [
-     'log_ret_1y','log_ret_1m','log_ret_3m',
-    'volatility_shock_monthly', 'volatility_3m',
-    'dist_SMA_100', 'RSI_14'
-    #, 'volume_surge_monthly', 
+    best_features = [#'log_ret_daily',
+                  'volatility_1w', 'volatility_1m', 'volatility_3m', 'volatility_6m',
+    #              'volatility_shock_monthly',
+    #'volatility_shock_weekly' , 
+                  'dist_SMA_100',
+    'dist_SMA_14', #'dist_SMA_50',
+                  'log_ret_1w','log_ret_1m',
+    #'log_ret_3m',
+    'log_ret_6m','log_ret_1y',
+'RSI_14',
+    'volume_surge_monthly'
 ]
     
     # Sanity check: Ensure all features were built successfully
