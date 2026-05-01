@@ -43,7 +43,7 @@ def base_model():
     return {
 
         'tree_method': 'hist',
-        'device': 'cuda',
+        #'device': 'cuda',
         'objective': 'rank:ndcg',
 
         'n_estimators': 100,
