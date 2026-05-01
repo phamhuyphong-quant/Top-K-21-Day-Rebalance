@@ -38,8 +38,11 @@ jobs:
           KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
           GH_PAT: ${{ secrets.GH_PAT }}
         run: |
-          sed -i "s|GH_PAT = os.environ\['GH_PAT'\]|GH_PAT = '${GH_PAT}'|" kaggle_kernel_data/kernel.py
-          kaggle kernels push -p kaggle_kernel_data/
+          # Work on a temp copy so the tracked file stays clean
+          cp -r kaggle_kernel_data/ /tmp/kaggle_kernel_data/
+          sed -i "s|GH_PAT = os.environ\['GH_PAT'\]|GH_PAT = '${GH_PAT}'|" /tmp/kaggle_kernel_data/kernel.py
+          kaggle kernels push -p /tmp/kaggle_kernel_data/
+
 
       - name: ⏳ Wait for data collection kernel to complete
         env:
@@ -76,6 +79,7 @@ jobs:
 
       - name: 🚀 Push market_data.parquet to data-storage branch
         run: |
+          git reset --hard HEAD          # ← discard any workspace changes
           git fetch origin data-storage
           git checkout data-storage
 
