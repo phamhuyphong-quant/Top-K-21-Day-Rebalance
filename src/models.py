@@ -71,7 +71,7 @@ def base_model():
     }
 def alpha_model():
     return {
-        'tree_method': 'hist', # Sử dụng GPU để huấn luyện
+        'tree_method': 'hist',  # GPU-accelerated histogram method
         'device':'cuda',
         'predictor': 'gpu_predictor',
         'objective': 'rank:ndcg', 
@@ -86,14 +86,14 @@ def alpha_model():
     }
 def train_mega_combiner(train_df, alpha_cols, epochs=5):
     """
-    Huấn luyện mạng LSTM-Attention để tạo ra trọng số tổ hợp Alpha động.
+    Trains the LSTM-Attention model to produce dynamic alpha combination weights.
     """
     num_alphas = len(alpha_cols)
     model = DynamicAlphaCombiner(num_alphas=num_alphas)
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     criterion = torch.nn.MSELoss()
     
-    # Chuyển đổi DataFrame sang Tensor (Batch, 1, Features) - Đơn giản hóa cho 1 bước thời gian
+    # Convert DataFrame to Tensor of shape (Batch, 1, Features) — single timestep simplification
     X_train = torch.tensor(train_df[alpha_cols].values, dtype=torch.float32).unsqueeze(1)
     y_train = torch.tensor(train_df['risk_adj_ret'].values, dtype=torch.float32)
     
@@ -109,8 +109,8 @@ def train_mega_combiner(train_df, alpha_cols, epochs=5):
 def walk_forward_cv(df, features, model_params=None, initial_train_months=12, 
                     test_months=6, gap_days=21, callback=None, use_mega=False, use_gp=False):
     """
-    Hàm Walk-forward CV hoàn chỉnh. 
-    Sử dụng eval_set để tối ưu hóa quá trình học của XGBoost Ranker.
+    Full walk-forward cross-validation loop.
+    Uses eval_set to monitor OOS NDCG at each fold for convergence tracking.
     """
     import random
     import numpy as np
@@ -123,7 +123,7 @@ def walk_forward_cv(df, features, model_params=None, initial_train_months=12,
     total_folds = max(1, (total_months - initial_train_months) // test_months)
     alpha_pool = list(features)
     
-    # 1. Chuẩn bị Alpha Pool nếu dùng Mega Alpha
+    # 1. Pre-compute WorldQuant alpha pool if using the LSTM mega combiner
     if use_mega:
         from src.alpha_mining import WorldQuantAlphas
         wq = WorldQuantAlphas(df)
@@ -150,7 +150,7 @@ def walk_forward_cv(df, features, model_params=None, initial_train_months=12,
             
         current_features = list(features)
 
-        # --- GP MINING (Nếu bật) ---
+        # --- GP ALPHA MINING (if enabled) ---
         if use_gp:
             from gplearn.genetic import SymbolicTransformer
             gp_model = SymbolicTransformer(
@@ -168,7 +168,7 @@ def walk_forward_cv(df, features, model_params=None, initial_train_months=12,
                 train_df[col_name], test_df[col_name] = gp_train[:, i], gp_test[:, i]
                 current_features.append(col_name)
 
-        # --- LSTM MEGA ALPHA (Nếu bật) ---
+        # --- LSTM MEGA ALPHA (if enabled) ---
         if use_mega:
             from src.models import train_mega_combiner
             combiner = train_mega_combiner(train_df, alpha_pool, epochs=100)
@@ -184,22 +184,22 @@ def walk_forward_cv(df, features, model_params=None, initial_train_months=12,
             
             current_features.append('Mega_Alpha')
 
-        # --- XGBOOST RANKER (Cập nhật quan trọng nhất) ---
-        # 1. Chuẩn bị tập Train
+        # --- XGBOOST RANKER ---
+        # 1. Prepare train set
         X_train = train_df[current_features]
         y_train = train_df['target_quintile']
         qids_train = train_df['qid']
         
-        # 2. Chuẩn bị tập Validation (chính là tập Test OOS)
+        # 2. Prepare validation set (the OOS test fold)
         X_test = test_df[current_features]
         y_test = test_df['target_quintile']
         qids_test = test_df['qid']
         
-        # 3. Khởi tạo Params
+        # 3. Initialise model
         params = model_params if model_params else base_model()
         ranker = xgb.XGBRanker(**params)
         
-        # 4. Huấn luyện với eval_set để mô hình hội tụ tốt nhất
+        # 4. Train with eval_set for convergence monitoring
         ranker.fit(
             X_train, y_train, qid=qids_train, 
             eval_set=[(X_test, y_test)], 
@@ -207,10 +207,10 @@ def walk_forward_cv(df, features, model_params=None, initial_train_months=12,
             verbose=False
         )
         
-        # 5. Dự báo điểm số
+        # 5. Score the test fold
         test_df['pred_score'] = ranker.predict(X_test)
         
-        # --- ĐÁNH GIÁ NDCG THỰC TẾ THEO NGÀY ---
+        # --- COMPUTE DAILY NDCG ---
         daily_ndcg = []
         for d, grp in test_df.groupby('date'):
             if len(grp) > 1:
@@ -224,14 +224,14 @@ def walk_forward_cv(df, features, model_params=None, initial_train_months=12,
         oos_predictions.append(test_df)
         if callback:
             callback(fold, total_folds, msg)
-        # Giải phóng bộ nhớ
+        # Free memory
         del train_df, X_train, y_train, X_test, y_test
         gc.collect()
         
         current_train_end = test_end
         fold += 1
         
-    print("\n✅ Hoàn thành Walk-forward CV.")
+    print("\n✅ Walk-forward CV complete.")
     return pd.concat(oos_predictions)
 def optimize_xgboost_ranker(df, features, n_trials=50):
     """

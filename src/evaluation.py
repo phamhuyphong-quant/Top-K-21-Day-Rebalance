@@ -1,4 +1,3 @@
-
 import matplotlib.pyplot as plt
 import pandas as pd
 import os
@@ -12,23 +11,23 @@ def feature_influence(model, features):
 
 def evaluate_ranking_performance(test_df, X_test=None, ranker=None, top_quantile=0.2, ret_col='next_1m_ret'):
     """
-    Evaluates the ranker. Hỗ trợ cả 2 chế độ:
-    1. Chế độ cũ (Tĩnh): Truyền X_test và ranker để tự tính điểm.
-    2. Chế độ mới (Động): Bỏ trống X_test và ranker, tự đọc cột 'pred_score' hoặc 'score' có sẵn.
+    Evaluates the ranker. Supports two modes:
+    1. Static mode: pass X_test and ranker to score predictions on the fly.
+    2. Dynamic mode: leave X_test and ranker as None to read 'pred_score' from test_df (output of walk_forward_cv).
     """
     eval_df = test_df.copy()
     
-    # --- LOGIC ĐỘNG: Xác định nguồn lấy điểm số ---
+    # --- Determine the source of scores ---
     if ranker is not None and X_test is not None:
-        # Chế độ cũ: Tự chạy dự báo
+        # Static mode: run predictions now
         eval_df['score'] = ranker.predict(X_test)
     elif 'pred_score' in eval_df.columns:
-        # Chế độ mới: Lấy điểm OOS từ Walk-Forward
+        # Dynamic mode: use OOS scores from walk-forward CV
         eval_df['score'] = eval_df['pred_score']
     elif 'score' in eval_df.columns:
-        pass # Nếu cột đã tên là score thì bỏ qua
+        pass  # Score column already present, nothing to do
     else:
-        raise ValueError("Không tìm thấy điểm số! Vui lòng truyền X_test và ranker, hoặc cung cấp DataFrame có cột 'pred_score'.")
+        raise ValueError("No score column found. Pass X_test and ranker, or provide a DataFrame with a 'pred_score' column.")
     
     # Identify top picks per date using the predicted score
     score_rank_pct = eval_df.groupby('date')['score'].rank(ascending=False, pct=True)
@@ -53,20 +52,20 @@ def evaluate_ranking_performance(test_df, X_test=None, ranker=None, top_quantile
 
 def feature_influence_ic(test_df, features, target_col='next_1m_ret'):
     """
-    Đánh giá độ ảnh hưởng của Feature bằng Information Coefficient (IC).
-    Tính tương quan Spearman trực tiếp từ DataFrame dự báo.
+    Evaluates feature predictive power via Information Coefficient (IC).
+    Computes Spearman rank correlation between each feature and the forward return target.
     """
     ic_dict = {}
     for feat in features:
-        # Tính tương quan hạng Spearman giữa Feature và Lợi nhuận tương lai
+        # Spearman correlation between the feature and the future return
         ic = test_df[feat].corr(test_df[target_col], method='spearman')
         ic_dict[feat] = ic
         
-    # Sắp xếp và vẽ biểu đồ
+    # Sort and plot
     ic_series = pd.Series(ic_dict).sort_values()
     
     plt.figure(figsize=(10, 6))
-    # Màu xanh cho tương quan dương, màu đỏ cho tương quan âm
+    # Blue for positive correlation, red for negative
     colors = ['#d62728' if x < 0 else '#1f77b4' for x in ic_series]
     
     ic_series.plot(kind='barh', color=colors, edgecolor='black')
@@ -131,11 +130,12 @@ def plot_rolling_ic_ir(test_df, feature, target_col='next_1m_ret', window=6):
     plt.show()
 def predicted_quintile_chart(test_df, X_test=None, ranker=None):
     """
-    Vẽ biểu đồ hiệu suất. Hỗ trợ cả mô hình tĩnh (có ranker) và mô hình động (đã có pred_score).
+    Plots average forward return by predicted quintile.
+    Supports both static mode (pass ranker) and dynamic mode (read pred_score from test_df).
     """
     df_plot = test_df.copy()
     
-    # --- LOGIC ĐỘNG: Xác định nguồn lấy điểm số ---
+    # --- Determine the source of scores ---
     if ranker is not None and X_test is not None:
         df_plot['score'] = ranker.predict(X_test)
     elif 'pred_score' in df_plot.columns:
@@ -143,10 +143,9 @@ def predicted_quintile_chart(test_df, X_test=None, ranker=None):
     elif 'score' in df_plot.columns:
         pass
     else:
-        raise ValueError("Không tìm thấy điểm số! Vui lòng truyền X_test và ranker, hoặc cung cấp DataFrame có cột 'pred_score'.")
+        raise ValueError("No score column found. Pass X_test and ranker, or provide a DataFrame with a 'pred_score' column.")
     
-    # Sử dụng rank(method='first') để tránh lỗi khi có nhiều điểm số trùng nhau
-    # Gán nhãn 1, 2, 3, 4, 5 cho đẹp trên trục X
+    # Use rank(method='first') to handle ties; label quintiles 1–5 for the x-axis
     df_plot['pred_quintile'] = df_plot.groupby('date')['score'].transform(
         lambda x: pd.qcut(x.rank(method='first'), 5, labels=[1, 2, 3, 4, 5])
     )
@@ -156,7 +155,7 @@ def predicted_quintile_chart(test_df, X_test=None, ranker=None):
     plt.figure(figsize=(8, 5))
     performance.plot(kind='bar', title='Future Return by Predicted Quintile', color='#1f77b4', edgecolor='black')
     plt.ylabel('Average 1-Month Forward Return')
-    plt.xlabel('Quintile (1 = Nhóm tệ nhất, 5 = Nhóm tốt nhất)')
+    plt.xlabel('Quintile (1 = Worst, 5 = Best)')
     plt.xticks(rotation=0)
     plt.grid(axis='y', linestyle='--', alpha=0.7)
     plt.show()
@@ -446,7 +445,7 @@ def run_xgboost_backtest(
 def plot_model_comparison(res_base, res_lstm):
     plt.figure(figsize=(12, 6))
     
-    # Chuẩn hóa về tỷ lệ % lợi nhuận để dễ so sánh
+    # Normalise to cumulative % return for easy comparison
     base_return = (res_base['total_value'] / res_base['total_value'].iloc[0] - 1) * 100
     lstm_return = (res_lstm['total_value'] / res_lstm['total_value'].iloc[0] - 1) * 100
     
@@ -510,4 +509,3 @@ def generate_and_save_pretrained_model(df, selected_features, use_mega_alpha=Fal
     
     print(f"✅ Success! Artifacts saved to {output_dir}")
     return predictions_path, equity_curve_path
-
