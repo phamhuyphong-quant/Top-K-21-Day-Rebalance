@@ -7,7 +7,7 @@ pyarrow
 scikit-learn
 optuna
 streamlit
-google-generativeai
+google-genai
 gplearn
 torch
 requests
