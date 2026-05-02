@@ -130,7 +130,8 @@ def update_market_data(file_path, symbols, start_date="2018-01-01", batch_size=5
                     error_msg = str(e)
                     print(f"Error on {company}: {error_msg}")
                     
-                    match = re.search(r"(\d+)\s*giây", error_msg)
+                    # Match rate-limit messages in either Vietnamese ("giây" = seconds) or English
+                    match = re.search(r"(\d+)\s*(giây|seconds?)", error_msg, re.IGNORECASE)
                     if match:
                         wait_seconds = int(match.group(1))
                         print(f"⏳ Rate limit hit! Waiting {wait_seconds} seconds...")

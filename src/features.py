@@ -129,10 +129,10 @@ def apply_cross_sectional_ranking(df, feature_cols):
     df_ranked = df.copy()
     
     if 'date' not in df_ranked.columns:
-        raise ValueError("DataFrame bắt buộc phải có cột 'date'.")
+        raise ValueError("DataFrame must have a 'date' column.")
         
     csr_features = []
-    print(f"⚖️ Đang áp dụng Cross-Sectional Ranking cho {len(feature_cols)} features...")
+    print(f"⚖️ Applying cross-sectional ranking to {len(feature_cols)} features...")
     
     for col in feature_cols:
         if col not in df_ranked.columns:
@@ -142,5 +142,5 @@ def apply_cross_sectional_ranking(df, feature_cols):
         df_ranked[csr_col_name] = df_ranked.groupby('date')[col].rank(pct=True)
         csr_features.append(csr_col_name)
     
-    print(f"✅ Đã tạo thành công {len(csr_features)} features chuẩn hóa chéo.")
+    print(f"✅ Successfully created {len(csr_features)} cross-sectionally normalised features.")
     return df_ranked, csr_features

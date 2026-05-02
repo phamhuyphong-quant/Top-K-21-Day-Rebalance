@@ -1,7 +1,6 @@
 import pandas as pd
 import xgboost as xgb
 from src import models as md
-# Import your LSTM training module here if it's separated
 
 def generate_paper_trade_signals(
     df: pd.DataFrame, 
@@ -47,7 +46,7 @@ def generate_paper_trade_signals(
     if inference_df.empty:
         raise ValueError(f"No data available for inference on {latest_date}")
 
-    # <-- NEW: Extract the current VN100 universe directly from today's data
+    
     current_vn100 = inference_df['Symbol'].unique().tolist()
 
     # 3. Model Training & Scoring
@@ -63,10 +62,7 @@ def generate_paper_trade_signals(
         inference_df['live_score'] = model.predict(X_inference)
         
     else:
-        print(f"Training Sequence-Based LSTM up to {train_df['date'].max().date()}...")
-        # mega_model = train_mega_lstm(train_df, features, target_col)
-        # inference_df['live_score'] = predict_mega_lstm(mega_model, df, latest_date, features)
-        pass # Placeholder for your LSTM logic
+        pass
 
     # 4. Rank Today's Stocks
     ranked_today = inference_df.sort_values(by='live_score', ascending=False).copy()
@@ -89,7 +85,6 @@ def generate_paper_trade_signals(
 
     # 5. Evaluate Current Portfolio (SELL vs HOLD based on grace band)
     for sym in current_portfolio:
-        # <-- NEW: Check against the dynamically extracted VN100 list
         if sym not in current_vn100:
             not_vn100_list.append(sym)
             continue  # Skip further rank checking, move to the next stock
