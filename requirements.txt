@@ -12,3 +12,4 @@ gplearn
 torch
 requests
 scipy
+plotly
