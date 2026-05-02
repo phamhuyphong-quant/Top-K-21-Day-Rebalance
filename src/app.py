@@ -8,6 +8,7 @@ from google.genai import types
 import sys
 import requests
 import io
+import plotly.graph_objects as go
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 # Standardized Absolute Imports
@@ -284,13 +285,23 @@ The equity curve below simulates a simple strategy: at each rebalance, hold the 
 index of 10,000.
 """)
 
-fig1, ax1 = plt.subplots(figsize=(12, 6))
-ax1.plot(pd.to_datetime(result['date']), result['total_value'],
-        marker='o', linestyle='-', color='#1f77b4', linewidth=2)
-ax1.set_title('Equity Curve: Portfolio Total Value (OOS Walk-Forward Backtest)', fontsize=14, fontweight='bold')
-ax1.grid(True, linestyle='--', alpha=0.6)
-plt.xticks(rotation=45)
-st.pyplot(fig1)
+fig1 = go.Figure()
+fig1.add_trace(go.Scatter(
+    x=pd.to_datetime(result['date']),
+    y=result['total_value'],
+    mode='lines+markers',
+    line=dict(color='#1f77b4', width=2),
+    marker=dict(size=5),
+    hovertemplate='<b>Date:</b> %{x|%Y-%m-%d}<br><b>Value:</b> %{y:,.2f}<extra></extra>'
+))
+fig1.update_layout(
+    title=dict(text='Equity Curve: Portfolio Total Value (OOS Walk-Forward Backtest)', font=dict(size=14)),
+    xaxis=dict(title='Date', tickangle=-45),
+    yaxis=dict(title='Portfolio Value'),
+    hovermode='x unified',
+    height=450,
+)
+st.plotly_chart(fig1, use_container_width=True)
 
 final_nav = result.iloc[-1]['total_value']
 st.metric("Final Portfolio Value", f"{final_nav:,.2f} VND",
@@ -337,13 +348,24 @@ with st.spinner("Computing feature influence and ranking diagnostics..."):
     ic_series = pd.Series(ic_scores).sort_values()
     colors = ['#d62728' if v < 0 else '#2ca02c' for v in ic_series.values]
 
-    fig_ic, ax_ic = plt.subplots(figsize=(10, 5))
-    ic_series.plot(kind='barh', ax=ax_ic, color=colors)
-    ax_ic.axvline(0, color='black', linewidth=0.8, linestyle='--')
-    ax_ic.set_title('Feature Influence: Information Coefficient (Spearman)', fontsize=13, fontweight='bold')
-    ax_ic.set_xlabel('IC Score')
-    ax_ic.grid(True, linestyle='--', alpha=0.5, axis='x')
-    st.pyplot(fig_ic)
+    fig_ic = go.Figure()
+    fig_ic.add_trace(go.Bar(
+        x=ic_series.values,
+        y=ic_series.index,
+        orientation='h',
+        marker=dict(
+            color=colors,
+            line=dict(color='rgba(255,255,255,0)', width=1.5)
+        ),
+        hovertemplate='<b>%{y}</b><br>IC Score: %{x:.4f}<extra></extra>'
+    ))
+    fig_ic.update_layout(
+        title='Feature Influence: Information Coefficient (Spearman)',
+        xaxis=dict(title='IC Score', zeroline=True, zerolinecolor='black', zerolinewidth=1),
+        hovermode='y',
+        height=420,
+    )
+    st.plotly_chart(fig_ic, use_container_width=True)
 
     # --- 2. QUINTILE MONOTONICITY CHART ---
     st.markdown("#### 📈 Predicted Quintile vs Actual Return")
@@ -363,15 +385,24 @@ with st.spinner("Computing feature influence and ranking diagnostics..."):
     ) if 'pred_quintile' in honest_test_df.columns else None
 
     if quintile_returns is not None:
-        fig_q, ax_q = plt.subplots(figsize=(8, 5))
-        ax_q.bar(quintile_returns['pred_quintile'], quintile_returns['next_1m_ret'] * 100,
-                color=['#d62728','#ff7f0e','#bcbd22','#17becf','#2ca02c'])
-        ax_q.set_title('Average Return by Predicted Quintile (OOS)', fontsize=13, fontweight='bold')
-        ax_q.set_xlabel('Predicted Quintile (1=Worst, 5=Best)')
-        ax_q.set_ylabel('Avg Next-Month Return (%)')
-        ax_q.axhline(0, color='black', linewidth=0.8)
-        ax_q.grid(True, linestyle='--', alpha=0.5, axis='y')
-        st.pyplot(fig_q)
+        fig_q = go.Figure()
+        fig_q.add_trace(go.Bar(
+            x=quintile_returns['pred_quintile'],
+            y=quintile_returns['next_1m_ret'] * 100,
+            marker=dict(
+                color=['#d62728','#ff7f0e','#bcbd22','#17becf','#2ca02c'],
+                line=dict(color='rgba(255,255,255,0)', width=1.5)
+            ),
+            hovertemplate='<b>Quintile %{x}</b><br>Avg Return: %{y:.3f}%<extra></extra>'
+        ))
+        fig_q.update_layout(
+            title='Average Return by Predicted Quintile (OOS)',
+            xaxis=dict(title='Predicted Quintile (1=Worst, 5=Best)', tickmode='linear'),
+            yaxis=dict(title='Avg Next-Month Return (%)'),
+            hovermode='x',
+            height=420,
+        )
+        st.plotly_chart(fig_q, use_container_width=True)
     else:
         # Compute pred_quintile from pred_score if not already present
         honest_test_df['pred_quintile'] = pd.qcut(
@@ -380,17 +411,25 @@ with st.spinner("Computing feature influence and ranking diagnostics..."):
             q=5, labels=[1,2,3,4,5]
         )
         quintile_returns = honest_test_df.groupby('pred_quintile', observed=False)['next_1m_ret'].mean().reset_index()
-        fig_q, ax_q = plt.subplots(figsize=(8, 5))
-        ax_q.bar(quintile_returns['pred_quintile'].astype(int), quintile_returns['next_1m_ret'] * 100,
-                color=['#d62728','#ff7f0e','#bcbd22','#17becf','#2ca02c'])
-        ax_q.set_title('Average Return by Predicted Quintile (OOS)', fontsize=13, fontweight='bold')
-        ax_q.set_xlabel('Predicted Quintile (1=Worst, 5=Best)')
-        ax_q.set_ylabel('Avg Next-Month Return (%)')
-        ax_q.axhline(0, color='black', linewidth=0.8)
-        ax_q.grid(True, linestyle='--', alpha=0.5, axis='y')
-        st.pyplot(fig_q)
-
-    # --- 3. ALPHA GENERATION METRICS ---
+        fig_q = go.Figure()
+        fig_q.add_trace(go.Bar(
+            x=quintile_returns['pred_quintile'],
+            y=quintile_returns['next_1m_ret'] * 100,
+            marker=dict(
+                color=['#d62728','#ff7f0e','#bcbd22','#17becf','#2ca02c'],
+                line=dict(color='rgba(255,255,255,0)', width=1.5)
+            ),
+            hovertemplate='<b>Quintile %{x}</b><br>Avg Return: %{y:.3f}%<extra></extra>'
+        ))
+        fig_q.update_layout(
+            title='Average Return by Predicted Quintile (OOS)',
+            xaxis=dict(title='Predicted Quintile (1=Worst, 5=Best)', tickmode='linear'),
+            yaxis=dict(title='Avg Next-Month Return (%)'),
+            hovermode='x',
+            height=420,
+        )
+        st.plotly_chart(fig_q, use_container_width=True)
+            # --- 3. ALPHA GENERATION METRICS ---
     st.divider()
     st.subheader("🎯 Alpha Generation Summary")
     st.markdown("""
