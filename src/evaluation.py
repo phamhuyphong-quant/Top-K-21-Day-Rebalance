@@ -187,6 +187,88 @@ def capital_over_time(result):
     plt.show()
 
 
+def compute_metrics(result, initial_capital=None, rf_annual=0.045):
+    """
+    Computes and prints risk-adjusted performance metrics from a backtest result DataFrame.
+    
+    Parameters
+    ----------
+    result          : DataFrame returned by run_xgboost_backtest (columns: date, total_value)
+    initial_capital : Starting capital. If None, uses result['total_value'].iloc[0]
+    rf_annual       : Annual risk-free rate. Default 4.5% (approx Vietnam T-bill rate)
+    """
+    import numpy as np
+
+    nav = result['total_value'].copy()
+    
+    if initial_capital is None:
+        initial_capital = nav.iloc[0]
+
+    # --- Monthly returns (your backtest rebalances monthly) ---
+    monthly_returns = nav.pct_change().dropna()
+
+    # --- Core metrics ---
+    n_months = len(monthly_returns)
+    n_years  = n_months / 12
+
+    total_return = (nav.iloc[-1] / initial_capital) - 1
+    cagr         = (nav.iloc[-1] / initial_capital) ** (1 / n_years) - 1
+
+    # Annualized Sharpe (monthly rf = annual rf / 12)
+    rf_monthly   = rf_annual / 12
+    excess_ret   = monthly_returns - rf_monthly
+    sharpe       = (excess_ret.mean() / excess_ret.std()) * np.sqrt(12)
+
+    # Sortino — only penalizes downside volatility
+    downside     = monthly_returns[monthly_returns < rf_monthly]
+    downside_std = downside.std() * np.sqrt(12)
+    sortino      = (cagr - rf_annual) / downside_std if downside_std > 0 else np.nan
+
+    # Max drawdown
+    rolling_max  = nav.cummax()
+    drawdown     = (nav - rolling_max) / rolling_max
+    max_dd       = drawdown.min()
+
+    # Calmar = CAGR / abs(Max Drawdown)
+    calmar       = cagr / abs(max_dd) if max_dd != 0 else np.nan
+
+    # Win rate (months with positive return)
+    win_rate     = (monthly_returns > 0).mean()
+
+    # Profit factor = sum of gains / sum of losses
+    gains        = monthly_returns[monthly_returns > 0].sum()
+    losses       = abs(monthly_returns[monthly_returns < 0].sum())
+    profit_factor = gains / losses if losses > 0 else np.nan
+
+    # --- Print ---
+    print("=" * 40)
+    print("       STRATEGY PERFORMANCE REPORT")
+    print("=" * 40)
+    print(f"  Period          : {result['date'].iloc[0].strftime('%Y-%m')} → {result['date'].iloc[-1].strftime('%Y-%m')} ({n_months} months)")
+    print(f"  Total Return    : {total_return:>+.2%}")
+    print(f"  CAGR            : {cagr:>+.2%}")
+    print("-" * 40)
+    print(f"  Sharpe Ratio    : {sharpe:>6.2f}   (>1 good, >2 great)")
+    print(f"  Sortino Ratio   : {sortino:>6.2f}   (like Sharpe, downside only)")
+    print(f"  Calmar Ratio    : {calmar:>6.2f}   (CAGR / Max Drawdown)")
+    print("-" * 40)
+    print(f"  Max Drawdown    : {max_dd:>+.2%}")
+    print(f"  Monthly Win Rate: {win_rate:>6.2%}")
+    print(f"  Profit Factor   : {profit_factor:>6.2f}   (gains / losses)")
+    print("=" * 40)
+
+    return {
+        'total_return'  : total_return,
+        'cagr'          : cagr,
+        'sharpe'        : sharpe,
+        'sortino'       : sortino,
+        'calmar'        : calmar,
+        'max_drawdown'  : max_dd,
+        'win_rate'      : win_rate,
+        'profit_factor' : profit_factor,
+    }
+
+
 def run_xgboost_backtest(
     df,
     model,
