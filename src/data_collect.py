@@ -55,123 +55,81 @@ def build_vn100(fetching = False):
 
 def update_market_data(file_path, symbols, start_date="2018-01-01", batch_size=5):
     """
-    Fetches stock history, cleans the data, handles rate limits, 
-    and incrementally saves to a Parquet file.
+    Fetches full stock history from start_date to today, ignoring 
+    any existing dates in the database.
     """
-    
-
     all_data = []
     processed_count = 0
-
-        # Replace the latest_market_day logic
     today = pd.Timestamp.today().normalize().tz_localize(None)
 
-    # Always look back to last completed trading day
-    weekday = today.weekday()
-    if weekday == 0:    # Monday — last close was Friday
-        latest_market_day = today - pd.Timedelta(days=3)
-    elif weekday == 5:  # Saturday
-        latest_market_day = today - pd.Timedelta(days=1)
-    elif weekday == 6:  # Sunday
-        latest_market_day = today - pd.Timedelta(days=2)
-    else:
-        # Tue–Fri: use yesterday (today's market may not have closed)
-        latest_market_day = today - pd.Timedelta(days=1)
-
-    # Load existing data if available
+    # Load existing data just to preserve symbols NOT in the current 'symbols' list 
+    # (Optional: if you want to completely wipe the file, set existing_df = pd.DataFrame())
     if os.path.exists(file_path):
         existing_df = pd.read_parquet(file_path)
-        existing_df["Symbol"] = existing_df["Symbol"].astype(str)
-        existing_df["date"] = pd.to_datetime(existing_df["date"], errors='coerce').dt.normalize().dt.tz_localize(None)
-        
-        last_dates = existing_df.groupby("Symbol")["date"].max().to_dict()
-        print(f"Resuming. Found data for {len(last_dates)} symbols.")
+        existing_df["date"] = pd.to_datetime(existing_df["date"]).dt.normalize().dt.tz_localize(None)
     else:
-        existing_df = pd.DataFrame(columns=["date", "Symbol"])
-        last_dates = {}
+        existing_df = pd.DataFrame()
 
     # --- FETCHING LOOP ---
     for company in symbols:
-        need_fetch = True
+        # ALWAYS fetch from the absolute start_date
+        fetch_start = start_date
         
-        if company in last_dates:
-            if last_dates[company] >= latest_market_day:
-                print(f"Skip {company} (up to date)")
-                need_fetch = False
-            else:
-                fetch_start_ts = last_dates[company] + pd.Timedelta(days=1)
-                fetch_start = fetch_start_ts.strftime('%Y-%m-%d')
-        else:
-            fetch_start = start_date
+        while True:
+            try:
+                df = Quote(symbol=company, source='VCI').history(
+                    start=fetch_start,
+                    end=today.strftime('%Y-%m-%d'),
+                    interval="1D"
+                )
 
-        if need_fetch:
-            while True:
-                try:
-                    df = Quote(symbol=company, source='VCI').history(
-                        start=fetch_start,
-                        end=today.strftime('%Y-%m-%d'),
-                        interval="1D"
-                    )
-
-                    if df is not None and not df.empty:
-                        # --- CLEANING DATA ---
-                        df = df.rename(columns={"time": "date"})
-                        df["Symbol"] = str(company)
-                        df = df[df["close"] > 0].copy()
-                        # 1. Standardize date (keeps it compatible with Parquet)
-                        df["date"] = pd.to_datetime(df["date"], errors='coerce').dt.normalize().dt.tz_localize(None)
-                        
-                        # 2. Drop NA values (must be reassigned to df)
-                        df = df.dropna()
-                        
-                        # 3. Drop duplicates and sort
-                        df = df.drop_duplicates(subset=["date", "Symbol"]).sort_values(["Symbol", "date"])
-                        
-                        # Ensure dataframe isn't empty AFTER dropping NAs
-                        if not df.empty:
-                            all_data.append(df)
-                            print(f"✓ Fetched and cleaned {company} ({len(df)} rows)")
-                        else:
-                            print(f"! {company} was empty after dropping NA values")
-                    else:
-                        print(f"! No new data for {company}")
+                if df is not None and not df.empty:
+                    # --- CLEANING DATA ---
+                    df = df.rename(columns={"time": "date"})
+                    df["Symbol"] = str(company)
                     
-                    time.sleep(3)
+                    df["date"] = pd.to_datetime(df["date"], errors='coerce').dt.normalize().dt.tz_localize(None)
+                    df = df.drop_duplicates(subset=["date", "Symbol"]).sort_values(["Symbol", "date"])
+                    df["close"] = df["close"].mask(df["close"] <= 0).ffill()
+                    df = df.dropna(subset=["close", "date"])
+                    if not df.empty:
+                        all_data.append(df)
+                        print(f"✓ Fetched FULL history for {company} ({len(df)} rows)")
+                else:
+                    print(f"! No data found for {company} since {start_date}")
+                
+                time.sleep(3) # Respect rate limits
+                break
+
+            except Exception as e:
+                error_msg = str(e)
+                print(f"Error on {company}: {error_msg}")
+                match = re.search(r"(\d+)\s*(giây|seconds?)", error_msg, re.IGNORECASE)
+                if match:
+                    wait_seconds = int(match.group(1))
+                    print(f"⏳ Rate limit hit! Waiting {wait_seconds} seconds...")
+                    time.sleep(wait_seconds + 1)
+                else:
                     break
-
-                except Exception as e:
-                    error_msg = str(e)
-                    print(f"Error on {company}: {error_msg}")
-                    
-                    # Match rate-limit messages in either Vietnamese ("giây" = seconds) or English
-                    match = re.search(r"(\d+)\s*(giây|seconds?)", error_msg, re.IGNORECASE)
-                    if match:
-                        wait_seconds = int(match.group(1))
-                        print(f"⏳ Rate limit hit! Waiting {wait_seconds} seconds...")
-                        time.sleep(wait_seconds + 1)
-                    else:
-                        print(f"Skipping {company} due to unknown error")
-                        break
 
         processed_count += 1
 
         # --- BATCH SAVING ---
         if processed_count % batch_size == 0 and all_data:
-            new_batch_df = pd.concat(all_data,ignore_index=True)
+            new_batch_df = pd.concat(all_data, ignore_index=True)
             
+            # Combine and deduplicate. Since we fetched full history, 
+            # 'keep="last"' ensures the freshest data wins.
             if not existing_df.empty:
                 existing_df = pd.concat([existing_df, new_batch_df], ignore_index=True)
             else:
                 existing_df = new_batch_df
                 
-            # Perform a final deduplication in case old data overlaps with new data
             existing_df = existing_df.drop_duplicates(subset=["date", "Symbol"], keep="last")
             existing_df = existing_df.sort_values(["Symbol", "date"])
             
-            # ✅ Safe version
             dir_name = os.path.dirname(file_path)
-            if dir_name:
-                os.makedirs(dir_name, exist_ok=True)
+            if dir_name: os.makedirs(dir_name, exist_ok=True)
             existing_df.to_parquet(file_path, index=False)
             
             print(f"💾 Saved batch at {processed_count} symbols")
@@ -179,24 +137,12 @@ def update_market_data(file_path, symbols, start_date="2018-01-01", batch_size=5
 
     # --- FINAL SAVE ---
     if all_data:
-        new_batch_df = pd.concat(all_data,ignore_index=True)
-        
-        if not existing_df.empty:
-            existing_df = pd.concat([existing_df, new_batch_df], ignore_index=True)
-        else:
-            existing_df = new_batch_df
-            
+        new_batch_df = pd.concat(all_data, ignore_index=True)
+        existing_df = pd.concat([existing_df, new_batch_df], ignore_index=True)
         existing_df = existing_df.drop_duplicates(subset=["date", "Symbol"], keep="last")
         existing_df = existing_df.sort_values(["Symbol", "date"])
-        
-        dir_name = os.path.dirname(file_path)
-        if dir_name:
-            os.makedirs(dir_name, exist_ok=True)
         existing_df.to_parquet(file_path, index=False)
-        print("💾 Final save completed.")
-
-    print("🎯 Full dataset build completed.")
-
+        print("💾 Final full-refresh save completed.")
 
 def fetch_indicator_data(ind_symbol, start_date, file_path):
     """
