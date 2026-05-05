@@ -12,79 +12,30 @@ jobs:
       contents: write
 
     steps:
-      - name: 📥 Checkout main branch
+      - name: 📥 Checkout data-storage branch
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: data-storage
 
       - name: 🐍 Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: 📦 Install Kaggle CLI and configure credentials
-        env:
-          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
-          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+      - name: 📦 Install dependencies
+        run: pip install vnstock pandas pyarrow
+        
+      - name: 📥 Checkout source code from main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: main_src
+
+      - name: 🚀 Run data collection
+        run: python main_src/src/data_collect.py
+
+      - name: 💾 Commit and push if data changed
         run: |
-          pip install kaggle
-          mkdir -p ~/.kaggle
-          echo "{\"username\":\"${KAGGLE_USERNAME}\",\"key\":\"${KAGGLE_KEY}\"}" > ~/.kaggle/kaggle.json
-          chmod 600 ~/.kaggle/kaggle.json
-
-      - name: 🚀 Inject GH_PAT and push data collection kernel to Kaggle
-        env:
-          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
-          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
-          GH_PAT: ${{ secrets.GH_PAT }}
-        run: |
-          # Work on a temp copy so the tracked file stays clean
-          cp -r kaggle_kernel_data/ /tmp/kaggle_kernel_data/
-          sed -i "s|GH_PAT = os.environ\['GH_PAT'\]|GH_PAT = '${GH_PAT}'|" /tmp/kaggle_kernel_data/kernel.py
-          kaggle kernels push -p /tmp/kaggle_kernel_data/
-
-
-      - name: ⏳ Wait for data collection kernel to complete
-        env:
-          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
-          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
-        run: |
-          KERNEL="phmhuyphongp/data-collection-vn100"
-          echo "Waiting for kernel: $KERNEL"
-          sleep 30
-          for i in $(seq 1 30); do
-            RAW=$(kaggle kernels status $KERNEL 2>&1)
-            echo "[$i/30] $RAW"
-            if echo "$RAW" | grep -q "COMPLETE"; then
-              echo "✅ Data collection completed!"
-              exit 0
-            fi
-            if echo "$RAW" | grep -q "ERROR\|CANCEL"; then
-              echo "❌ Kernel failed!"
-              exit 1
-            fi
-            sleep 60
-          done
-          echo "Timed out"; exit 1
-
-      - name: 📥 Download market_data.parquet
-        env:
-          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
-          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
-        run: |
-          mkdir -p /tmp/data_artifacts
-          kaggle kernels output phmhuyphongp/data-collection-vn100 -p /tmp/data_artifacts/
-          echo "=== Downloaded files ==="
-          ls -lh /tmp/data_artifacts/
-
-      - name: 🚀 Push market_data.parquet to data-storage branch
-        run: |
-          git reset --hard HEAD          # ← discard any workspace changes
-          git fetch origin data-storage
-          git checkout data-storage
-
-          cp /tmp/data_artifacts/market_data.parquet .
-
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           git add market_data.parquet

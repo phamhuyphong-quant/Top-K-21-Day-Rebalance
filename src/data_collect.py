@@ -20,23 +20,36 @@ def clean_symbols(symbol_list):
         )
     )
 
-def build_vn100():
-    listing = Listing(source='VCI')
+def build_vn100(fetching = False):
+    if fetching:
+        listing = Listing(source='KBS')
 
-    vn30_raw = listing.symbols_by_group('VN30')
-    vnmid_raw = listing.symbols_by_group('VNMidCap')
+        vn30_raw = listing.symbols_by_group('VN30')
+        vnmid_raw = listing.symbols_by_group('VNMidCap')
 
-    vn30 = clean_symbols(vn30_raw)
-    vnmid = clean_symbols(vnmid_raw)
+        vn30 = clean_symbols(vn30_raw)
+        vnmid = clean_symbols(vnmid_raw)
 
-    vn100 = sorted(list(set(vn30 + vnmid)))
+        vn100 = sorted(list(set(vn30 + vnmid)))
 
-    print("VN30:", len(vn30))
-    print("VNMID:", len(vnmid))
-    print("VN100:", len(vn100))
+        print("VN30:", len(vn30))
+        print("VNMID:", len(vnmid))
+        print("VN100:", len(vn100))
 
-    return vn100
-
+        return vn100
+    return ["ACB", "ANV", "BCM", "BID", "BMP", "BSI", "BSR", "BVH"
+            , "BWE", "CII", "CMG", "CTD", "CTG", "CTR", "CTS", "DBC"
+            , "DCM", "DGC", "DGW", "DIG", "DPM", "DSE", "DXG", "DXS"
+            , "EIB", "EVF", "FPT", "FRT", "FTS", "GAS", "GEE", "GEX"
+            , "GMD", "GVR", "HAG", "HCM", "HDB", "HDC", "HDG", "HHV"
+            , "HPG", "HSG", "HT1", "IMP", "KBC", "KDC", "KDH", "KOS"
+            , "LPB", "MBB", "MSB", "MSN", "MWG", "NAB", "NKG", "NLG"
+            , "NT2", "NVL", "OCB", "PAN", "PC1", "PDR", "PHR", "PLX"
+            , "PNJ", "POW", "PVD", "PVT", "REE", "SAB", "SBT", "SCS"
+            , "SHB", "SIP", "SJS", "SSB", "SSI", "STB", "SZC", "TCB"
+            , "TCH", "TPB", "VCB", "VCG", "VCI", "VGC", "VHC", "VHM"
+            , "VIB", "VIC", "VIX", "VJC", "VND", "VNM", "VPB", "VPI"
+            , "VPL", "VRE", "VSC", "VTP"]
 
 
 
@@ -144,7 +157,7 @@ def update_market_data(file_path, symbols, start_date="2018-01-01", batch_size=5
 
         # --- BATCH SAVING ---
         if processed_count % batch_size == 0 and all_data:
-            new_batch_df = pd.concat(all_data)
+            new_batch_df = pd.concat(all_data,ignore_index=True)
             
             if not existing_df.empty:
                 existing_df = pd.concat([existing_df, new_batch_df], ignore_index=True)
@@ -155,7 +168,10 @@ def update_market_data(file_path, symbols, start_date="2018-01-01", batch_size=5
             existing_df = existing_df.drop_duplicates(subset=["date", "Symbol"], keep="last")
             existing_df = existing_df.sort_values(["Symbol", "date"])
             
-            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            # ✅ Safe version
+            dir_name = os.path.dirname(file_path)
+            if dir_name:
+                os.makedirs(dir_name, exist_ok=True)
             existing_df.to_parquet(file_path, index=False)
             
             print(f"💾 Saved batch at {processed_count} symbols")
@@ -163,7 +179,7 @@ def update_market_data(file_path, symbols, start_date="2018-01-01", batch_size=5
 
     # --- FINAL SAVE ---
     if all_data:
-        new_batch_df = pd.concat(all_data)
+        new_batch_df = pd.concat(all_data,ignore_index=True)
         
         if not existing_df.empty:
             existing_df = pd.concat([existing_df, new_batch_df], ignore_index=True)
@@ -173,7 +189,9 @@ def update_market_data(file_path, symbols, start_date="2018-01-01", batch_size=5
         existing_df = existing_df.drop_duplicates(subset=["date", "Symbol"], keep="last")
         existing_df = existing_df.sort_values(["Symbol", "date"])
         
-        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        dir_name = os.path.dirname(file_path)
+        if dir_name:
+            os.makedirs(dir_name, exist_ok=True)
         existing_df.to_parquet(file_path, index=False)
         print("💾 Final save completed.")
 
@@ -207,7 +225,9 @@ def fetch_indicator_data(ind_symbol, start_date, file_path):
             df = df.dropna()
             
             if not df.empty:
-                os.makedirs(os.path.dirname(file_path), exist_ok=True)
+                dir_name = os.path.dirname(file_path)
+                if dir_name:
+                    os.makedirs(dir_name, exist_ok=True)
                 df.to_parquet(file_path, index=False)
                 print(f"✓ Successfully saved {ind_symbol} data ({len(df)} rows) to {file_path}")
             else:
@@ -224,7 +244,7 @@ if __name__ == "__main__":
     
     # Define where the data should be saved
     # The GitHub Action expects it in data/market_data.parquet
-    SAVE_PATH = "data/market_data.parquet"
+    SAVE_PATH = "market_data.parquet"
     
     print("🤖 Robot starting data collection...")
     

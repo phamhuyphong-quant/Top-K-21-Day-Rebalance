@@ -10,13 +10,18 @@ jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: 🏓 Ping Streamlit App
+      - name: Install Playwright
+        run: pip install playwright && playwright install chromium
+
+      - name: Ping with real browser session
         run: |
-          echo "Pinging app at $(date)"
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 60 https://crosssectionalrankvn100-analyzing.streamlit.app/)
-          echo "HTTP Status: $STATUS"
-          if [ "$STATUS" -ge 200 ] && [ "$STATUS" -lt 400 ]; then
-            echo "✅ App is awake and responding!"
-          else
-            echo "⚠️ App returned status $STATUS — it may be waking up."
-          fi
+          python3 - <<'EOF'
+          from playwright.sync_api import sync_playwright
+          import time
+          with sync_playwright() as p:
+              browser = p.chromium.launch()
+              page = browser.new_page()
+              page.goto("https://crosssectionalrankvn100-analyzing.streamlit.app/", timeout=60000)
+              time.sleep(15)  # Hold session open
+              browser.close()
+          EOF
