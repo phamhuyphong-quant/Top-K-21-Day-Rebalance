@@ -1,7 +1,8 @@
 import os, sys
 
+
 # ── 1. Clone main branch (source code) ───────────────────────────────────────
-GH_PAT = os.environ['GH_PAT']
+GH_PAT = os.environ.get('GH_PAT') or os.environ.get('GITHUB_TOKEN', '')
 os.system(f"git clone --depth 1 --branch main https://{GH_PAT}@github.com/Masterokadanori/Cross_Sectional_Rank_VN100.git /kaggle/working/repo")
 sys.path.append('/kaggle/working/repo')
 
