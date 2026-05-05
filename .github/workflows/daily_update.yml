@@ -41,22 +41,3 @@ jobs:
           git add market_data.parquet
           git diff --cached --quiet && echo "No changes" || git commit -m "data: automated market update $(date +'%Y-%m-%d')"
           git push origin data-storage
-
-  trigger-precompute:
-    needs: update-data
-    runs-on: ubuntu-latest
-    if: success()
-
-    steps:
-      - name: 🔁 Trigger precompute workflow
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GH_PAT }}
-          script: |
-            await github.rest.actions.createWorkflowDispatch({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: 'precompute_model.yml',
-              ref: 'main'
-            });
-            console.log('✅ Precompute workflow triggered!');
