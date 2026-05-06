@@ -96,14 +96,9 @@ def groups_to_features(group_names: list[str]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Helper: compute final ROI from a backtest history DataFrame
+# Metric helpers
 # ---------------------------------------------------------------------------
 def _final_roi(history: pd.DataFrame) -> float:
-    """
-    Returns the final ROI (%) from a `run_xgboost_backtest` result.
-
-    ROI = (final_value / initial_value - 1) * 100
-    """
     if history is None or history.empty:
         return float("-inf")
     initial = history["total_value"].iloc[0]
@@ -113,8 +108,136 @@ def _final_roi(history: pd.DataFrame) -> float:
     return (final / initial - 1) * 100.0
 
 
+def _sharpe_ratio(history: pd.DataFrame, risk_free_rate: float = 0.0) -> float:
+    if history is None or history.empty:
+        return float("-inf")
+    returns = history["total_value"].pct_change().dropna()
+    if returns.std() == 0 or len(returns) < 2:
+        return float("-inf")
+    # Annualise assuming monthly rows → factor = √12
+    excess = returns - risk_free_rate / 12
+    return (excess.mean() / excess.std()) * (12 ** 0.5)
+
+
 # ---------------------------------------------------------------------------
-# Main function
+# Core search loop (shared by both public functions)
+# ---------------------------------------------------------------------------
+def _run_combo_search(
+    df: pd.DataFrame,
+    metric_fn,
+    metric_name: str,
+    *,
+    initial_capital: float = 10_000,
+    walk_forward_kwargs: Optional[dict] = None,
+    backtest_kwargs: Optional[dict] = None,
+    model_params: Optional[dict] = None,
+    min_groups: int = 1,
+    verbose: bool = True,
+) -> tuple[list[str], float, pd.DataFrame]:
+
+    from src.evaluation import run_xgboost_backtest
+    from src.models import walk_forward_cv
+
+    wf_kwargs = dict(
+        initial_train_months=24, test_months=6,
+        gap_days=21, use_mega=False, use_gp=False,
+    )
+    if walk_forward_kwargs:
+        wf_kwargs.update(walk_forward_kwargs)
+
+    bt_kwargs = dict(
+        buy_fraction=0.05, hold_fraction=0.15,
+        trailing_stop=-0.10, take_profit=0.50,
+        time_of_rebalance="M", trend_filter_col="dist_SMA_100",
+        settlement_delay=3,
+    )
+    if backtest_kwargs:
+        bt_kwargs.update(backtest_kwargs)
+
+    combos: list[tuple[str, ...]] = []
+    for r in range(min_groups, len(ALL_GROUP_NAMES) + 1):
+        combos.extend(itertools.combinations(ALL_GROUP_NAMES, r))
+
+    total = len(combos)
+    if verbose:
+        print(f"\n{'='*60}")
+        print(f"Feature-Combo Search ({metric_name}): {total} combinations")
+        print(f"Groups: {ALL_GROUP_NAMES}")
+        print(f"{'='*60}\n")
+
+    records: list[dict] = []
+    best_features: list[str] = []
+    best_score: float = float("-inf")
+
+    for idx, combo in enumerate(combos, start=1):
+        combo_name = " + ".join(combo)
+        features   = groups_to_features(list(combo))
+
+        missing = [f for f in features if f not in df.columns]
+        if missing:
+            if verbose:
+                print(f"[{idx}/{total}] SKIP '{combo_name}': missing cols {missing}")
+            records.append(dict(combo_name=combo_name, groups=list(combo),
+                                features=features, score=None,
+                                error=f"Missing columns: {missing}"))
+            continue
+
+        if verbose:
+            print(f"[{idx}/{total}] Testing: {combo_name}")
+
+        try:
+            oos_df = walk_forward_cv(
+                df=df, features=features,
+                model_params=model_params, **wf_kwargs,
+            )
+            history = run_xgboost_backtest(
+                df=oos_df, model=None, features=None,
+                initial_capital=initial_capital, **bt_kwargs,
+            )
+            score = metric_fn(history)
+
+            if verbose:
+                print(f"         → {metric_name}: {score:+.4f}\n")
+
+            records.append(dict(combo_name=combo_name, groups=list(combo),
+                                features=features, score=score, error=None))
+
+            if score > best_score:
+                best_score    = score
+                best_features = features
+                if verbose:
+                    print(f"  🏆 New best! {metric_name} = {best_score:+.4f}  [{combo_name}]\n")
+
+        except Exception as exc:
+            err_msg = f"{type(exc).__name__}: {exc}"
+            if verbose:
+                print(f"         ⚠️  ERROR — {err_msg}")
+                traceback.print_exc()
+            records.append(dict(combo_name=combo_name, groups=list(combo),
+                                features=features, score=None, error=err_msg))
+
+    results_df = (
+        pd.DataFrame(records)
+        .sort_values("score", ascending=False, na_position="last")
+        .reset_index(drop=True)
+    )
+
+    if verbose:
+        print("\n" + "="*60)
+        print(f"SEARCH COMPLETE — Top 5 by {metric_name}:")
+        print("="*60)
+        for _, row in results_df.dropna(subset=["score"]).head(5).iterrows():
+            print(f"  {row['score']:+10.4f}  |  {row['combo_name']}")
+        if best_features:
+            print(f"\n🏆 Best combo : {results_df.iloc[0]['combo_name']}")
+            print(f"   {metric_name:12s}: {best_score:+.4f}")
+            print(f"   Features    : {best_features}")
+
+    return best_features, best_score, results_df
+
+
+# ---------------------------------------------------------------------------
+# Public functions
 # ---------------------------------------------------------------------------
 def find_best_feature_combo(
     df: pd.DataFrame,
@@ -126,225 +249,66 @@ def find_best_feature_combo(
     min_groups: int = 1,
     verbose: bool = True,
 ) -> tuple[list[str], float, pd.DataFrame]:
-    """
-    Try every non-empty combination of feature groups, run walk_forward_cv and
-    run_xgboost_backtest for each, and return the combination that achieves the
-    highest final ROI.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Feature-engineered DataFrame produced by build_features() and
-        target_generating_ranking().  Must already contain all feature columns,
-        'target_quintile', 'qid', 'date', 'Symbol', and 'close'.
-
-    initial_capital : float
-        Starting cash passed to run_xgboost_backtest (default 10 000).
-
-    walk_forward_kwargs : dict, optional
-        Extra keyword arguments forwarded to walk_forward_cv(), e.g.
-        {'initial_train_months': 24, 'test_months': 6, 'gap_days': 21}.
-
-    backtest_kwargs : dict, optional
-        Extra keyword arguments forwarded to run_xgboost_backtest(), e.g.
-        {'buy_fraction': 0.05, 'hold_fraction': 0.15,
-         'trend_filter_col': 'dist_SMA_100'}.
-
-    model_params : dict, optional
-        XGBRanker hyper-parameters passed to walk_forward_cv(model_params=…).
-        Defaults to the base_model() params defined in models.py.
-
-    min_groups : int
-        Minimum number of groups that must be present in a combination.
-        Set to 2 if you want to skip single-group experiments.
-
-    verbose : bool
-        Print progress and results for every combination.
-
-    Returns
-    -------
-    best_features : list[str]
-        The flat list of feature column names in the winning combination.
-
-    best_roi : float
-        The final ROI (%) achieved by the winning combination.
-
-    results_df : pd.DataFrame
-        Summary table with columns:
-            combo_name | groups | features | roi_pct | error
-        sorted by roi_pct descending.
-    """
-    # --- lazy imports to avoid loading heavy libs at module import time ----
-    from src.evaluation import run_xgboost_backtest
-    from src.models import walk_forward_cv
-
-    wf_kwargs = dict(
-        initial_train_months=24,
-        test_months=6,
-        gap_days=21,
-        use_mega=False,
-        use_gp=False,
-    )
-    if walk_forward_kwargs:
-        wf_kwargs.update(walk_forward_kwargs)
-
-    bt_kwargs = dict(
-        buy_fraction=0.05,
-        hold_fraction=0.15,
-        trailing_stop=-0.10,
-        take_profit=0.50,
-        time_of_rebalance="M",
-        trend_filter_col="dist_SMA_100",
-        settlement_delay=3,
-    )
-    if backtest_kwargs:
-        bt_kwargs.update(backtest_kwargs)
-
-    # --- build all combinations of groups ---------------------------------
-    combos: list[tuple[str, ...]] = []
-    for r in range(min_groups, len(ALL_GROUP_NAMES) + 1):
-        combos.extend(itertools.combinations(ALL_GROUP_NAMES, r))
-
-    total = len(combos)
-    if verbose:
-        print(f"\n{'='*60}")
-        print(f"Feature-Combo Search: {total} combinations to evaluate")
-        print(f"Groups: {ALL_GROUP_NAMES}")
-        print(f"{'='*60}\n")
-
-    records: list[dict] = []
-    best_features: list[str] = []
-    best_roi: float = float("-inf")
-
-    for idx, combo in enumerate(combos, start=1):
-        combo_name = " + ".join(combo)
-        features   = groups_to_features(list(combo))
-
-        # Skip if any required column is missing in df
-        missing = [f for f in features if f not in df.columns]
-        if missing:
-            if verbose:
-                print(f"[{idx}/{total}] SKIP '{combo_name}': missing cols {missing}")
-            records.append({
-                "combo_name": combo_name,
-                "groups":     list(combo),
-                "features":   features,
-                "roi_pct":    None,
-                "error":      f"Missing columns: {missing}",
-            })
-            continue
-
-        if verbose:
-            print(f"[{idx}/{total}] Testing: {combo_name}")
-            print(f"         Features ({len(features)}): {features}")
-
-        try:
-            # --- Walk-forward CV ------------------------------------------
-            oos_df = walk_forward_cv(
-                df=df,
-                features=features,
-                model_params=model_params,
-                **wf_kwargs,
-            )
-
-            # --- Backtest on OOS predictions ------------------------------
-            history = run_xgboost_backtest(
-                df=oos_df,
-                model=None,        # predictions already in 'pred_score' column
-                features=None,
-                initial_capital=initial_capital,
-                **bt_kwargs,
-            )
-
-            roi = _final_roi(history)
-
-            if verbose:
-                print(f"         → Final ROI: {roi:+.2f}%\n")
-
-            records.append({
-                "combo_name": combo_name,
-                "groups":     list(combo),
-                "features":   features,
-                "roi_pct":    roi,
-                "error":      None,
-            })
-
-            if roi > best_roi:
-                best_roi      = roi
-                best_features = features
-                if verbose:
-                    print(f"  🏆 New best! ROI = {best_roi:+.2f}%  [{combo_name}]\n")
-
-        except Exception as exc:
-            err_msg = f"{type(exc).__name__}: {exc}"
-            if verbose:
-                print(f"         ⚠️  ERROR — {err_msg}")
-                traceback.print_exc()
-            records.append({
-                "combo_name": combo_name,
-                "groups":     list(combo),
-                "features":   features,
-                "roi_pct":    None,
-                "error":      err_msg,
-            })
-
-    # --- Summary table ----------------------------------------------------
-    results_df = (
-        pd.DataFrame(records)
-        .sort_values("roi_pct", ascending=False, na_position="last")
-        .reset_index(drop=True)
+    """Optimises for final ROI (%)."""
+    return _run_combo_search(
+        df, _final_roi, "ROI (%)",
+        initial_capital=initial_capital,
+        walk_forward_kwargs=walk_forward_kwargs,
+        backtest_kwargs=backtest_kwargs,
+        model_params=model_params,
+        min_groups=min_groups,
+        verbose=verbose,
     )
 
-    if verbose:
-        print("\n" + "="*60)
-        print("SEARCH COMPLETE — Top 5 combinations by ROI:")
-        print("="*60)
-        top5 = results_df.dropna(subset=["roi_pct"]).head(5)
-        for _, row in top5.iterrows():
-            print(f"  {row['roi_pct']:+8.2f}%  |  {row['combo_name']}")
-        print()
-        if best_features:
-            print(f"🏆 Best combo : {results_df.iloc[0]['combo_name']}")
-            print(f"   Final ROI  : {best_roi:+.2f}%")
-            print(f"   Features   : {best_features}")
 
-    return best_features, best_roi, results_df
+def find_best_feature_combo_sharpe(
+    df: pd.DataFrame,
+    *,
+    risk_free_rate: float = 0.0,
+    initial_capital: float = 10_000,
+    walk_forward_kwargs: Optional[dict] = None,
+    backtest_kwargs: Optional[dict] = None,
+    model_params: Optional[dict] = None,
+    min_groups: int = 1,
+    verbose: bool = True,
+) -> tuple[list[str], float, pd.DataFrame]:
+    """Optimises for annualised Sharpe ratio (assumes monthly history rows)."""
+    metric_fn = lambda h: _sharpe_ratio(h, risk_free_rate)
+    return _run_combo_search(
+        df, metric_fn, "Sharpe",
+        initial_capital=initial_capital,
+        walk_forward_kwargs=walk_forward_kwargs,
+        backtest_kwargs=backtest_kwargs,
+        model_params=model_params,
+        min_groups=min_groups,
+        verbose=verbose,
+    )
 
 
-# ---------------------------------------------------------------------------
-# Optional: narrow the search to a specific subset of groups
-# ---------------------------------------------------------------------------
 def find_best_feature_combo_subset(
     df: pd.DataFrame,
     candidate_groups: list[str],
+    metric: str = "roi",
     **kwargs,
 ) -> tuple[list[str], float, pd.DataFrame]:
     """
-    Like find_best_feature_combo() but only considers combinations built from
-    `candidate_groups` (a subset of ALL_GROUP_NAMES).
-
-    Example
-    -------
-        best_feat, best_roi, tbl = find_best_feature_combo_subset(
-            df,
-            candidate_groups=["returns", "volatility", "rsi"],
-        )
+    Subset search — pass metric='roi' or metric='sharpe'.
+    Any extra kwargs (including risk_free_rate) are forwarded.
     """
-    # Temporarily restrict the global group list
     invalid = [g for g in candidate_groups if g not in FEATURE_GROUPS]
     if invalid:
         raise ValueError(f"Unknown group(s): {invalid}. Valid: {ALL_GROUP_NAMES}")
 
-    # Monkey-patch locally then restore
+    fn = find_best_feature_combo_sharpe if metric == "sharpe" else find_best_feature_combo
+
     original = list(ALL_GROUP_NAMES)
     ALL_GROUP_NAMES.clear()
     ALL_GROUP_NAMES.extend(candidate_groups)
     try:
-        return find_best_feature_combo(df, **kwargs)
+        return fn(df, **kwargs)
     finally:
         ALL_GROUP_NAMES.clear()
         ALL_GROUP_NAMES.extend(original)
-
 
 # ---------------------------------------------------------------------------
 # Quick smoke-test (run directly: python feature_search.py)
