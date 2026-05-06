@@ -180,7 +180,7 @@ def update_market_data(
     # Final save
     if new_data:
         existing_df = _merge_and_dedup(existing_df, new_data)
-        existing_df = existing_df[existing_df['date'] >= pd.Timestamp(START_DATE)]
+        existing_df = existing_df[existing_df['date'] >= pd.Timestamp(start_date)]
         _save(existing_df, file_path)
         log.info("💾 Final save — %d total rows", len(existing_df))
 
