@@ -1,209 +1,257 @@
-from vnstock import Listing
-from vnstock import Company
+from vnstock import Listing, Company, Quote
 import pandas as pd
 import numpy as np
 import os
-from vnstock import Quote
 import re
 import time
+import logging
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)s  %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("data_collect.log", encoding="utf-8"),
+    ],
+)
+log = logging.getLogger(__name__)
 
 
-#VN100_CROSS_SECTIONAL_RANKING
+# ── Symbols ───────────────────────────────────────────────────────────────────
 def clean_symbols(symbol_list):
     return sorted(
-        list(
-            set(
-                str(s).strip()
-                for s in symbol_list
-                if pd.notna(s)
-            )
-        )
+        set(str(s).strip() for s in symbol_list if pd.notna(s))
     )
 
-def build_vn100(fetching = False):
+
+def build_vn100(fetching=False):
     if fetching:
-        listing = Listing(source='KBS')
-
-        vn30_raw = listing.symbols_by_group('VN30')
-        vnmid_raw = listing.symbols_by_group('VNMidCap')
-
-        vn30 = clean_symbols(vn30_raw)
-        vnmid = clean_symbols(vnmid_raw)
-
-        vn100 = sorted(list(set(vn30 + vnmid)))
-
-        print("VN30:", len(vn30))
-        print("VNMID:", len(vnmid))
-        print("VN100:", len(vn100))
-
+        listing = Listing(source="KBS")
+        vn30  = clean_symbols(listing.symbols_by_group("VN30"))
+        vnmid = clean_symbols(listing.symbols_by_group("VNMidCap"))
+        vn100 = sorted(set(vn30 + vnmid))
+        log.info("VN30=%d  VNMID=%d  VN100=%d", len(vn30), len(vnmid), len(vn100))
         return vn100
-    return ["ACB", "ANV", "BCM", "BID", "BMP", "BSI", "BSR", "BVH"
-            , "BWE", "CII", "CMG", "CTD", "CTG", "CTR", "CTS", "DBC"
-            , "DCM", "DGC", "DGW", "DIG", "DPM", "DSE", "DXG", "DXS"
-            , "EIB", "EVF", "FPT", "FRT", "FTS", "GAS", "GEE", "GEX"
-            , "GMD", "GVR", "HAG", "HCM", "HDB", "HDC", "HDG", "HHV"
-            , "HPG", "HSG", "HT1", "IMP", "KBC", "KDC", "KDH", "KOS"
-            , "LPB", "MBB", "MSB", "MSN", "MWG", "NAB", "NKG", "NLG"
-            , "NT2", "NVL", "OCB", "PAN", "PC1", "PDR", "PHR", "PLX"
-            , "PNJ", "POW", "PVD", "PVT", "REE", "SAB", "SBT", "SCS"
-            , "SHB", "SIP", "SJS", "SSB", "SSI", "STB", "SZC", "TCB"
-            , "TCH", "TPB", "VCB", "VCG", "VCI", "VGC", "VHC", "VHM"
-            , "VIB", "VIC", "VIX", "VJC", "VND", "VNM", "VPB", "VPI"
-            , "VPL", "VRE", "VSC", "VTP"]
+
+    return [
+    "AAA", "ACB", "ADS", "VRE", "AGR", "ANV", "BFC", "BHN", "BID", "BMI",
+    "BMP", "BSI", "BVH", "BWE", "CII", "CMG", "CTS", "CSV", "CTD", "CTG",
+    "DBC", "DCL", "DCM", "DGC", "DGW", "DHG", "DIG", "DMC", "DPM", "DPR",
+    "DRC", "DVP", "DXG", "EIB", "FMC", "FPT", "FTS", "GAS", "GEX", "GMD",
+    "HAG", "HCM", "HDB", "HDC", "HDG", "HPG", "HSG", "HT1", "HVN", "IMP",
+    "KBC", "KDC", "KDH", "LPB", "MBB", "MSN", "MWG", "NKG", "NLG", "NT2",
+    "NVL", "PAN", "PC1", "PDR", "PHR", "PLX", "PNJ", "POW", "PPC", "PTB",
+    "PVD", "PVT", "RAL", "REE", "SAB", "SBT", "SCS", "SHB", "SJS", "SSI",
+    "STB", "STK", "TBC", "TCB", "TCH", "TCM", "TMS", "TRA", "VCB", "VCF",
+    "VCG", "VCI", "VGC", "VHC", "VIB", "VIC", "VJC", "VND", "VNM", "VPB"]
 
 
-
-def update_market_data(file_path, symbols, start_date="2018-01-01", batch_size=5):
+# ── Data cleaning ─────────────────────────────────────────────────────────────
+def clean_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Fetches full stock history from start_date to today, ignoring 
-    any existing dates in the database.
+    Applies OHLCV sanity rules — no rows are ever dropped:
+      - Detect any OHLC violation per row (high < low, high < open/close,
+        low > open/close, or any non-positive price)
+      - If ANY violation is found on a row, forward-fill ALL four OHLC
+        columns for that row from the previous valid row
+      - Volume is left completely untouched
     """
-    all_data = []
-    processed_count = 0
-    today = pd.Timestamp.today().normalize().tz_localize(None)
+    price_cols = ["open", "high", "low", "close"]
 
-    # Load existing data just to preserve symbols NOT in the current 'symbols' list 
-    # (Optional: if you want to completely wipe the file, set existing_df = pd.DataFrame())
+    # Mark rows with any OHLC violation
+    violation = (
+        (df["high"] < df["low"])
+        | (df["high"] < df["open"])
+        | (df["high"] < df["close"])
+        | (df["low"]  > df["open"])
+        | (df["low"]  > df["close"])
+        | (df[price_cols] <= 0).any(axis=1)
+    )
+
+    if violation.any():
+        log.debug("  Flagging %d OHLC-violation rows for ffill", violation.sum())
+        # Set all four OHLC columns to NaN on bad rows, then ffill
+        df.loc[violation, price_cols] = np.nan
+        df[price_cols] = df[price_cols].ffill()
+
+    return df
+
+
+# ── Market data ───────────────────────────────────────────────────────────────
+def _save(df: pd.DataFrame, file_path: str) -> None:
+    dir_name = os.path.dirname(file_path)
+    if dir_name:
+        os.makedirs(dir_name, exist_ok=True)
+    df.to_parquet(file_path, index=False)
+
+
+def update_market_data(
+    file_path: str,
+    symbols: list,
+    start_date: str = "2019-01-01",
+    batch_size: int = 5,
+    base_sleep: float = 3.0,
+) -> None:
+    """
+    Fetches full stock history from start_date to today for every symbol.
+    Existing data is preserved; freshly fetched rows overwrite on (date, Symbol).
+    OHLC violations are fixed by ffill-ing the entire candle; volume is untouched.
+    No rows are dropped.
+    """
+    today_str = pd.Timestamp.today().normalize().strftime("%Y-%m-%d")
+
+    # Load existing file once
     if os.path.exists(file_path):
         existing_df = pd.read_parquet(file_path)
-        existing_df["date"] = pd.to_datetime(existing_df["date"]).dt.normalize().dt.tz_localize(None)
+        existing_df["date"] = (
+            pd.to_datetime(existing_df["date"]).dt.normalize().dt.tz_localize(None)
+        )
+        log.info("Loaded existing data: %d rows", len(existing_df))
     else:
         existing_df = pd.DataFrame()
 
-    # --- FETCHING LOOP ---
-    for company in symbols:
-        # ALWAYS fetch from the absolute start_date
-        fetch_start = start_date
-        
+    new_data: list[pd.DataFrame] = []
+    processed = 0
+
+    for symbol in symbols:
+        fetch_start = start_date  # always full history (as requested)
+
         while True:
             try:
-                df = Quote(symbol=company, source='VCI').history(
+                df = Quote(symbol=symbol, source="VCI").history(
                     start=fetch_start,
-                    end=today.strftime('%Y-%m-%d'),
-                    interval="1D"
+                    end=today_str,
+                    interval="1D",
                 )
 
                 if df is not None and not df.empty:
-                    # --- CLEANING DATA ---
                     df = df.rename(columns={"time": "date"})
-                    df["Symbol"] = str(company)
-                    
-                    df["date"] = pd.to_datetime(df["date"], errors='coerce').dt.normalize().dt.tz_localize(None)
-                    df = df.drop_duplicates(subset=["date", "Symbol"]).sort_values(["Symbol", "date"])
-                    df["close"] = df["close"].mask(df["close"] <= 0).ffill()
-                    df = df.dropna(subset=["close", "date"])
+                    df["Symbol"] = str(symbol)
+                    df["date"] = (
+                        pd.to_datetime(df["date"], errors="coerce")
+                        .dt.normalize()
+                        .dt.tz_localize(None)
+                    )
+                    df = df.drop_duplicates(subset=["date", "Symbol"]).sort_values(
+                        ["Symbol", "date"]
+                    )
+                    df = clean_ohlcv(df)
+
                     if not df.empty:
-                        all_data.append(df)
-                        print(f"✓ Fetched FULL history for {company} ({len(df)} rows)")
+                        new_data.append(df)
+                        log.info("✓ %s — %d rows fetched", symbol, len(df))
+                    else:
+                        log.warning("! %s — empty after cleaning", symbol)
                 else:
-                    print(f"! No data found for {company} since {start_date}")
-                
-                time.sleep(3) # Respect rate limits
+                    log.warning("! %s — no data returned from API", symbol)
+
+                time.sleep(base_sleep)
                 break
 
-            except Exception as e:
-                error_msg = str(e)
-                print(f"Error on {company}: {error_msg}")
-                match = re.search(r"(\d+)\s*(giây|seconds?)", error_msg, re.IGNORECASE)
+            except Exception as exc:
+                msg = str(exc)
+                log.error("Error on %s: %s", symbol, msg)
+                match = re.search(r"(\d+)\s*(giây|seconds?)", msg, re.IGNORECASE)
                 if match:
-                    wait_seconds = int(match.group(1))
-                    print(f"⏳ Rate limit hit! Waiting {wait_seconds} seconds...")
-                    time.sleep(wait_seconds + 1)
+                    wait = int(match.group(1)) + 1
+                    log.info("⏳ Rate limit — waiting %ds", wait)
+                    time.sleep(wait)
                 else:
-                    break
+                    break  # non-rate-limit error; skip this symbol
 
-        processed_count += 1
+        processed += 1
 
-        # --- BATCH SAVING ---
-        if processed_count % batch_size == 0 and all_data:
-            new_batch_df = pd.concat(all_data, ignore_index=True)
-            
-            # Combine and deduplicate. Since we fetched full history, 
-            # 'keep="last"' ensures the freshest data wins.
-            if not existing_df.empty:
-                existing_df = pd.concat([existing_df, new_batch_df], ignore_index=True)
-            else:
-                existing_df = new_batch_df
-                
-            existing_df = existing_df.drop_duplicates(subset=["date", "Symbol"], keep="last")
-            existing_df = existing_df.sort_values(["Symbol", "date"])
-            
-            dir_name = os.path.dirname(file_path)
-            if dir_name: os.makedirs(dir_name, exist_ok=True)
-            existing_df.to_parquet(file_path, index=False)
-            
-            print(f"💾 Saved batch at {processed_count} symbols")
-            all_data = [] 
+        # Batch save every `batch_size` symbols
+        if processed % batch_size == 0 and new_data:
+            existing_df = _merge_and_dedup(existing_df, new_data)
+            _save(existing_df, file_path)
+            log.info("💾 Batch save at %d symbols (%d total rows)", processed, len(existing_df))
+            new_data = []
 
-    # --- FINAL SAVE ---
-    if all_data:
-        new_batch_df = pd.concat(all_data, ignore_index=True)
-        existing_df = pd.concat([existing_df, new_batch_df], ignore_index=True)
-        existing_df = existing_df.drop_duplicates(subset=["date", "Symbol"], keep="last")
-        existing_df = existing_df.sort_values(["Symbol", "date"])
-        existing_df.to_parquet(file_path, index=False)
-        print("💾 Final full-refresh save completed.")
+    # Final save
+    if new_data:
+        existing_df = _merge_and_dedup(existing_df, new_data)
+        existing_df = existing_df[existing_df['date'] >= pd.Timestamp(START_DATE)]
+        _save(existing_df, file_path)
+        log.info("💾 Final save — %d total rows", len(existing_df))
 
-def fetch_indicator_data(ind_symbol, start_date, file_path):
+
+def _merge_and_dedup(existing: pd.DataFrame, new_chunks: list) -> pd.DataFrame:
     """
-    Fetches market index data (e.g., VNINDEX), cleans it, 
-    and saves it to a Parquet file.
+    Merges existing data with new chunks.
+    On (date, Symbol) conflict the new fetch wins (keep='last').
     """
-    # 1. Get today as a Timestamp
-    today_ts = pd.Timestamp.today().normalize().tz_localize(None)
-    
-    # 2. Convert to string format 'YYYY-MM-DD' for the API!
-    today_str = today_ts.strftime('%Y-%m-%d')
-    
+    new_df = pd.concat(new_chunks, ignore_index=True)
+    if existing.empty:
+        combined = new_df
+    else:
+        combined = pd.concat([existing, new_df], ignore_index=True)
+    combined = combined.drop_duplicates(subset=["date", "Symbol"], keep="last")
+    combined = combined.sort_values(["Symbol", "date"]).reset_index(drop=True)
+    return combined
+
+
+# ── Index / indicator data ────────────────────────────────────────────────────
+def fetch_indicator_data(
+    ind_symbol: str,
+    start_date: str,
+    file_path: str,
+) -> None:
+    """
+    Fetches market index data (e.g. VNINDEX), cleans it,
+    and saves to a Parquet file.
+    """
+    today_str = pd.Timestamp.today().normalize().strftime("%Y-%m-%d")
+
     try:
-        quote = Quote(symbol=ind_symbol, source='VCI')
-        
-        # FIX: Pass today_str instead of the Timestamp object
-        df = quote.history(start=start_date, end=today_str, interval='1D')
-        
-        if df is not None and not df.empty:
-            df = df.rename(columns={'time': 'date'})
-            
-            # Standardize dates
-            df["date"] = pd.to_datetime(df["date"], errors='coerce').dt.normalize().dt.tz_localize(None)
-            
-            # Drop NAs
-            df = df.dropna()
-            
-            if not df.empty:
-                dir_name = os.path.dirname(file_path)
-                if dir_name:
-                    os.makedirs(dir_name, exist_ok=True)
-                df.to_parquet(file_path, index=False)
-                print(f"✓ Successfully saved {ind_symbol} data ({len(df)} rows) to {file_path}")
-            else:
-                print(f"! {ind_symbol} data was empty after dropping NA values.")
-        else:
-            print(f"! No data returned from API for {ind_symbol}.")
-            
-    except Exception as e:
-        print(f"Error fetching {ind_symbol}: {e}")
+        df = Quote(symbol=ind_symbol, source="VCI").history(
+            start=start_date, end=today_str, interval="1D"
+        )
+
+        if df is None or df.empty:
+            log.warning("! No data returned for %s", ind_symbol)
+            return
+
+        df = df.rename(columns={"time": "date"})
+        df["date"] = (
+            pd.to_datetime(df["date"], errors="coerce")
+            .dt.normalize()
+            .dt.tz_localize(None)
+        )
+        df = df.dropna()
+
+        if df.empty:
+            log.warning("! %s data empty after cleaning", ind_symbol)
+            return
+
+        _save(df, file_path)
+        log.info("✓ %s — %d rows saved to %s", ind_symbol, len(df), file_path)
+
+    except Exception as exc:
+        log.error("Error fetching %s: %s", ind_symbol, exc)
 
 
+# ── Entry point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    import os
-    
-    # Define where the data should be saved
-    # The GitHub Action expects it in data/market_data.parquet
-    SAVE_PATH = "market_data.parquet"
-    
-    print("🤖 Robot starting data collection...")
-    
-    # 1. Get the current list of VN100 symbols
-    # This ensures we pick up any new symbols added to the index
+    MARKET_PATH    = "market_data.parquet"
+    VNINDEX_PATH   = "vnindex_data.parquet"
+    START_DATE     = "2019-01-01"
+
+    log.info("🤖 Starting data collection…")
+
     vn100_symbols = build_vn100()
-    
-    # 2. Run the update function
-    # This will fetch only the missing dates (delta) up to today
+
     update_market_data(
-        file_path=SAVE_PATH, 
+        file_path=MARKET_PATH,
         symbols=vn100_symbols,
-        start_date="2018-01-01"
+        start_date=START_DATE,
     )
-    
-    print(f"✅ Success! Data saved to {SAVE_PATH}")
+
+    fetch_indicator_data(
+        ind_symbol="VNINDEX",
+        start_date=START_DATE,
+        file_path=VNINDEX_PATH,
+    )
+
+    log.info("✅ Done. Market data → %s | VNINDEX → %s", MARKET_PATH, VNINDEX_PATH)
