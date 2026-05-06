@@ -114,8 +114,8 @@ def target_generating_ranking(df, freq='M'):
     df['risk_adj_ret'] = df['risk_adj_ret'].replace([np.inf, -np.inf], np.nan)
 
     def robust_qcut(x):
-        if x.dropna().empty:
-            return np.nan
+        if x.dropna().shape[0] < 5:  # need at least q=5 valid values to form quintiles
+            return pd.Series(np.nan, index=x.index)
         return pd.qcut(x.rank(method='first'), q=5, labels=False)
 
     df['target_quintile'] = df.groupby('date')['risk_adj_ret'].transform(robust_qcut)
@@ -125,6 +125,7 @@ def target_generating_ranking(df, freq='M'):
     df = df.sort_values(by=['date', 'Symbol'])
     
     return df
+
 def apply_cross_sectional_ranking(df, feature_cols):
     df_ranked = df.copy()
     
