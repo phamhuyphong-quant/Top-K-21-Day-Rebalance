@@ -97,7 +97,7 @@ def update_market_data(
     Fetches full stock history from start_date to today for every symbol.
     Existing data is preserved; freshly fetched rows overwrite on (date, Symbol).
     OHLC violations are fixed by ffill-ing the entire candle; volume is untouched.
-    No rows are dropped.
+    No rows are dropped. Removes symbols from existing data if they are no longer in the provided symbols list.
     """
     today_str = pd.Timestamp.today().normalize().strftime("%Y-%m-%d")
 
@@ -107,6 +107,14 @@ def update_market_data(
         existing_df["date"] = (
             pd.to_datetime(existing_df["date"]).dt.normalize().dt.tz_localize(None)
         )
+
+        initial_count = len(existing_df)
+        # Keep only rows where 'Symbol' is in the current symbols (VN100) list
+        existing_df = existing_df[existing_df['Symbol'].isin(symbols)]
+        
+        removed_count = initial_count - len(existing_df)
+        if removed_count > 0:
+            log.info("Purged %d rows: Symbols no longer in the current list.", removed_count)
         log.info("Loaded existing data: %d rows", len(existing_df))
     else:
         existing_df = pd.DataFrame()
