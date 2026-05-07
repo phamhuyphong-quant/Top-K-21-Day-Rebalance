@@ -23,11 +23,11 @@ def rsi(df, window_length=14):
 
 def volume(df):
    grouped_volume = df.groupby("Symbol")["volume"]
-   df['vol_5d_avg'] = grouped_volume.transform(lambda x: x.rolling(window=5).mean())
-   df['vol_21d_avg'] = grouped_volume.transform(lambda x: x.rolling(window=21).mean())
-   df['vol_3m_avg'] = grouped_volume.transform(lambda x: x.rolling(window=63).mean())
-   df['volume_surge_monthly'] = df['vol_21d_avg'] / df['vol_3m_avg']
-   df['volume_surge_weekly'] = df['vol_5d_avg'] / df['vol_21d_avg']
+   df['vol_5d'] = grouped_volume.transform(lambda x: x.rolling(window=5).mean())
+   df['vol_1m'] = grouped_volume.transform(lambda x: x.rolling(window=21).mean())
+   df['vol_3m'] = grouped_volume.transform(lambda x: x.rolling(window=63).mean())
+   df['volume_surge_monthly'] = df['vol_1m'] / df['vol_3m']
+   df['volume_surge_weekly'] = df['vol_5d'] / df['vol_1m']
    return df
 
 def return_ln(df):
