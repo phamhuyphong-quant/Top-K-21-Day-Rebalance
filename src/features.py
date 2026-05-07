@@ -16,9 +16,6 @@ def rsi(df, window_length=14):
     rs = avg_gain / avg_loss
     df[f'RSI_{window_length}'] = 100 - (100 / (1 + rs))
     
-    # 5. Handle edge cases
-    df[f'RSI_{window_length}'] = df[f'RSI_{window_length}'].fillna(100)
-    
     return df
 
 def volume(df):
@@ -53,7 +50,7 @@ def volatility(df):
     
     df["volatility_shock_monthly"] = df['volatility_1m']/df['volatility_3m']
     df["volatility_shock_weekly"] = df['volatility_1w']/df['volatility_1m']
-    
+    df.drop(columns=['log_ret_daily'], inplace=True)
     return df
 
 def MA(df):
@@ -85,6 +82,23 @@ def MA(df):
     df['dist_EMA_200'] = df['close'] / df['EMA_200']
     return df 
 
+# In features.py — new function:
+def price_structure(df):
+    grouped = df.groupby("Symbol")
+    df['dist_52w_high']    = df['close'] / grouped['close'].transform(lambda x: x.rolling(252).max())
+    df['log_ret_skip1m']   = np.log(grouped['close'].shift(21) / grouped['close'].shift(126))
+    return df
+def volume_quality(df):
+    # On-Balance Volume trend (normalized)
+    grouped = df.groupby("Symbol")
+    df['obv_trend'] = (grouped.apply(
+        lambda x: (np.sign(x['close'].diff()) * x['volume']).rolling(21).sum()
+    )).reset_index(level=0, drop=True) / df['vol_1m']
+
+    # Price-volume divergence — rising price on falling volume is a warning
+    df['price_vol_divergence'] = df['log_ret_1m'] / (df['volume_surge_monthly'] + 0.001)
+    return df
+
 def build_features(df):
     df = df.copy()
     df = df.sort_values(["Symbol", "date"])
@@ -94,7 +108,9 @@ def build_features(df):
     df = MA(df)
     df = volume(df)
     df = rsi(df)
-    
+    df = volume_quality(df)
+    df = price_structure(df)
+
     feature_cols = [col for col in df.columns if col not in ['Symbol', 'date', 'close', 'high', 'low', 'open', 'volume']]
     df[feature_cols] = df[feature_cols].replace([np.inf, -np.inf], np.nan)
     df.dropna(subset=feature_cols, inplace=True)
