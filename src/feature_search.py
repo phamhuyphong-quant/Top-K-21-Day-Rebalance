@@ -68,7 +68,8 @@ FEATURE_GROUPS: dict[str, list[str]] = {
     "moving_average": [
         #"SMA_14", "SMA_20", "SMA_50", "SMA_100",
         #"EMA_14", "EMA_20", "EMA_50", "EMA_100",
-        "dist_SMA_100", "dist_SMA_14", "dist_SMA_50",
+        "dist_SMA_9", "dist_SMA_21", "dist_SMA_50","dist_SMA_100","dist_SMA_200",
+        "dist_EMA_9", "dist_EMA_21", "dist_EMA_50","dist_EMA_100","dist_EMA_200",
     ],
     "volume": [
         "vol_5d",
