@@ -57,7 +57,7 @@ FEATURE_GROUPS: dict[str, list[str]] = {
         "log_ret_1y",
     ],
     "volatility": [
-        "log_ret_daily",
+        #"log_ret_daily",
         "volatility_1w",
         "volatility_1m",
         "volatility_3m",
@@ -72,15 +72,23 @@ FEATURE_GROUPS: dict[str, list[str]] = {
         "dist_EMA_9", "dist_EMA_21", "dist_EMA_50","dist_EMA_100","dist_EMA_200",
     ],
     "volume": [
-        "vol_5d",
-        "vol_1m",
-        "vol_3m",
+        #"vol_5d",
+        #"vol_1m",
+        #"vol_3m",
         "volume_surge_monthly",
         "volume_surge_weekly",
+        "obv_trend",
+        "price_vol_divergence"
     ],
     "rsi": [
         "RSI_14",
     ],
+    "wq_features":["WQ_Alpha_012","WQ_Alpha_024","WQ_Alpha_028","WQ_Alpha_053","WQ_Alpha_060"],
+    
+    "price_structure": [
+    "dist_52w_high",
+    "log_ret_skip1m",]
+
 }
 
 ALL_GROUP_NAMES: list[str] = list(FEATURE_GROUPS.keys())
