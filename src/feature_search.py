@@ -319,6 +319,98 @@ def find_best_feature_combo_subset(
         ALL_GROUP_NAMES.clear()
         ALL_GROUP_NAMES.extend(original)
 
+
+
+def search_best_roi_and_sharpe(
+    df: pd.DataFrame,
+    *,
+    risk_free_rate: float = 0.045,
+    initial_capital: float = 10_000,
+    walk_forward_kwargs: Optional[dict] = None,
+    backtest_kwargs: Optional[dict] = None,
+    model_params: Optional[dict] = None,
+    min_groups: int = 1,
+    verbose: bool = True,
+) -> tuple[dict, dict, pd.DataFrame]:
+    """
+    Runs the search once and identifies the best combo for ROI 
+    and the best combo for Sharpe Ratio separately.
+    """
+    from src.evaluation import run_xgboost_backtest
+    from src.models import walk_forward_cv
+
+    # 1. Setup default parameters
+    wf_kwargs = dict(initial_train_months=24, test_months=6, gap_days=21)
+    if walk_forward_kwargs: wf_kwargs.update(walk_forward_kwargs)
+
+    bt_kwargs = dict(buy_fraction=0.05, hold_fraction=0.15, trend_filter_col="dist_SMA_100")
+    if backtest_kwargs: bt_kwargs.update(backtest_kwargs)
+
+    # 2. Generate all combinations
+    combos = []
+    for r in range(min_groups, len(ALL_GROUP_NAMES) + 1):
+        combos.extend(itertools.combinations(ALL_GROUP_NAMES, r))
+
+    records = []
+    total = len(combos)
+
+    for idx, combo in enumerate(combos, start=1):
+        combo_name = " + ".join(combo)
+        features = groups_to_features(list(combo))
+
+        if verbose:
+            print(f"[{idx}/{total}] Testing: {combo_name}")
+
+        try:
+            # Execute simulation (the expensive part)
+            oos_df = walk_forward_cv(df=df, features=features, model_params=model_params, **wf_kwargs)
+            history = run_xgboost_backtest(df=oos_df, model=None, features=None, initial_capital=initial_capital, **bt_kwargs)
+
+            # Calculate both metrics from the SAME history object
+            roi_val = _final_roi(history)
+            sharpe_val = _sharpe_ratio(history, risk_free_rate=risk_free_rate)
+
+            if verbose:
+                print(f"         >> Result: ROI = {roi_val:>8.2f}% | Sharpe = {sharpe_val:>6.2f}")
+                
+                # Optional: Highlight if it's a "leader" in either category
+                if not records: # First successful run
+                    print("         🏆 Current Leader (First Run)")
+                else:
+                    is_best_roi = roi_val > max([r['roi_%'] for r in records if r['roi_%'] is not None], default=float('-inf'))
+                    is_best_sharpe = sharpe_val > max([r['sharpe'] for r in records if r['sharpe'] is not None], default=float('-inf'))
+                    if is_best_roi or is_best_sharpe:
+                        lead_msg = " + ".join([m for c, m in [(is_best_roi, "ROI"), (is_best_sharpe, "Sharpe")] if c])
+                        print(f"         🏆 New Best {lead_msg}!")
+
+
+            records.append({
+                "combo_name": combo_name,
+                "roi_%": roi_val,
+                "sharpe": sharpe_val,
+                "features": features
+            })
+
+        except Exception as exc:
+            if verbose: print(f" Error: {exc}")
+            continue
+
+    # 3. Create results dataframe and find bests
+    results_df = pd.DataFrame(records)
+    
+    # Identify the best for each metric independently
+    best_roi_row = results_df.loc[results_df["roi_%"].idxmax()].to_dict()
+    best_sharpe_row = results_df.loc[results_df["sharpe"].idxmax()].to_dict()
+
+    if verbose:
+        print("\n" + "="*40)
+        print(f"BEST ROI: {best_roi_row['roi_%']:.2f}% ({best_roi_row['combo_name']})")
+        print(f"BEST SHARPE: {best_sharpe_row['sharpe']:.2f} ({best_sharpe_row['combo_name']})")
+        print("="*40)
+
+    return best_roi_row, best_sharpe_row, results_df
+
+
 # ---------------------------------------------------------------------------
 # Quick smoke-test (run directly: python feature_search.py)
 # ---------------------------------------------------------------------------
