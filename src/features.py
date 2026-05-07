@@ -59,20 +59,30 @@ def volatility(df):
 def MA(df):
     grouped = df.groupby("Symbol")
     
-    df['SMA_14'] = grouped['close'].transform(lambda x: x.rolling(window=14).mean())
-    df['SMA_20'] = grouped['close'].transform(lambda x: x.rolling(window=20).mean())
+    df['SMA_9'] = grouped['close'].transform(lambda x: x.rolling(window=9).mean())
+    df['SMA_21'] = grouped['close'].transform(lambda x: x.rolling(window=21).mean())
     df['SMA_50'] = grouped['close'].transform(lambda x: x.rolling(window=50).mean())
     df['SMA_100'] = grouped['close'].transform(lambda x: x.rolling(window=100).mean())
+    df['SMA_200'] = grouped['close'].transform(lambda x: x.rolling(window=200).mean())
     
-    df['EMA_14'] = grouped['close'].transform(lambda x: x.ewm(span=14, adjust=False).mean())
-    df['EMA_20'] = grouped['close'].transform(lambda x: x.ewm(span=20, adjust=False).mean())
+
+    df['EMA_9'] = grouped['close'].transform(lambda x: x.ewm(span=9, adjust=False).mean())
+    df['EMA_21'] = grouped['close'].transform(lambda x: x.ewm(span=21, adjust=False).mean())
     df['EMA_50'] = grouped['close'].transform(lambda x: x.ewm(span=50, adjust=False).mean())
     df['EMA_100'] = grouped['close'].transform(lambda x: x.ewm(span=100, adjust=False).mean())
-    
-    df['dist_SMA_100'] = df['close'] / df['SMA_100']
-    df['dist_SMA_14'] = df['close']/df['SMA_14']
-    df['dist_SMA_50'] = df['close']/df['SMA_50']
+    df['EMA_200'] = grouped['close'].transform(lambda x: x.ewm(span=200, adjust=False).mean())
 
+    df['dist_SMA_9'] = df['close'] / df['SMA_9']
+    df['dist_SMA_21'] = df['close']/df['SMA_21']
+    df['dist_SMA_50'] = df['close']/df['SMA_50']
+    df['dist_SMA_100'] = df['close'] / df['SMA_100']
+    df['dist_SMA_200'] = df['close'] / df['SMA_200']
+
+    df['dist_EMA_9'] = df['close'] / df['EMA_9']
+    df['dist_EMA_21'] = df['close']/df['EMA_21']
+    df['dist_EMA_50'] = df['close']/df['EMA_50']
+    df['dist_EMA_100'] = df['close'] / df['EMA_100']
+    df['dist_EMA_200'] = df['close'] / df['EMA_200']
     return df 
 
 def build_features(df):
