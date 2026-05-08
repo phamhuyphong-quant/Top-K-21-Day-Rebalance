@@ -16,7 +16,7 @@ The Vietnamese stock market (VN100 universe) presents unique challenges: a relat
 
 Instead of forecasting where a stock's price will go, this system answers a simpler question: *which stocks are likely to outperform the others next month?* The model ranks all stocks in the VN100 universe daily by expected relative performance, and flags the top-ranked as Buy signals.
 
-The core model is an **XGBoost LambdaRank** (`rank:ndcg`), trained using walk-forward cross-validation to simulate real-world out-of-sample performance. An experimental **LSTM-Attention alpha combiner** is also included for ensemble research.
+The core production model is an **XGBoost LambdaRank** (`rank:ndcg`), trained using walk-forward cross-validation to simulate real-world out-of-sample performance. An experimental **LSTM-Attention alpha combiner** was also explored but found to be unstable out-of-sample — see [Model Architecture](#-model-architecture) for the full comparison.
 
 ### Why `rank:ndcg` over regression?
 
@@ -32,20 +32,20 @@ project 1/
 │   └── VN100_CROSS_SECTIONAL_RANKING/
 │       ├── 01_Data_Collection.ipynb
 │       ├── 02_Feature_Engineering_Local.ipynb      # Local execution
-│       ├── 02_Feature_Engineering_Kaggle.ipynb     # Kaggle execution
+│       ├── 02_Feature_Engineering_Kaggle.ipynb     # Kaggle execution (includes feature search)
 │       ├── 03_Model_Training_and_Evaluation_Local.ipynb
 │       └── 03_Model_Training_and_Evaluation_Kaggle.ipynb
 ├── src/
 │   ├── data_collect.py       # VN100 universe construction & incremental data fetching
 │   ├── features.py           # Technical feature engineering (RSI, MA, volatility, etc.)
 │   ├── alpha_mining.py       # WorldQuant-style alpha factors & GP alpha search
+│   ├── feature_search.py     # Feature group combination search (optimise ROI / Sharpe)
 │   ├── models.py             # XGBoost ranker, walk-forward CV, Optuna tuning
-│   ├── evaluation.py         # Backtest metrics, win rates, IC analysis
+│   ├── evaluation.py         # Backtest engine, portfolio metrics, IC analysis
 │   ├── inference.py          # Live signal generation (Buy / Hold / Sell)
 │   ├── deep_combiner.py      # LSTM-Attention dynamic alpha weighting (experimental)
 │   └── app.py                # Streamlit dashboard
 ├── kaggle_kernel/            # Kaggle kernel scripts for GPU-accelerated training
-├── kaggle_kernel_data/       # Kaggle kernel for data pipeline
 ├── .github/workflows/        # GitHub Actions: daily updates, precompute, keep-alive
 └── requirements.txt
 ```
@@ -56,41 +56,54 @@ project 1/
 
 - **VN100 Universe Construction** — Automatically combines VN30 + VNMidCap from the VCI data source via `vnstock`.
 - **Incremental Data Updates** — Smart incremental fetching: only downloads new trading days, skipping up-to-date symbols.
-- **Rich Feature Set** — RSI (14-period), multi-horizon log returns (1W/1M/3M/6M/1Y), volume surge ratios, annualised volatility, SMA/EMA crossovers, and WorldQuant-style alpha factors (Alpha #6, #12, #24, #28, #41, #53, #54, #60, #101).
-- **XGBoost LambdaRank** — Optimises NDCG directly for ranking quality rather than regression error.
-- **Walk-Forward Validation** — Simulates live deployment; avoids look-ahead bias with a strict 21-day gap between train and test periods.
+- **Rich Feature Set** — Multi-horizon log returns (1W/1M/3M/6M/1Y), volume surge ratios, annualised volatility, RSI-14, SMA/EMA distances (9/21/50/100/200), 52-week high distance, skip-1M return, OBV trend, price-volume divergence, and WorldQuant-style alpha factors (Alpha #6, #12, #24, #28, #41, #53, #54, #60, #101). The active feature set used in training is defined in the notebooks.
+- **Feature Group Search** — `feature_search.py` exhaustively evaluates all combinations of feature groups to find the configuration that maximises ROI or Sharpe ratio.
+- **XGBoost LambdaRank** — Optimises NDCG directly for ranking quality rather than regression error. Selected as the production model after comparative experiments.
+- **Walk-Forward Validation** — Simulates live deployment; avoids look-ahead bias with a strict 21-day gap between train and test periods (24-month training window, 6-month test window).
 - **IC Analysis** — Evaluates each feature's Information Coefficient (Spearman rank correlation) against future returns, both aggregate and time-series IC IR.
+- **Realistic Backtest Engine** — Simulates VN-market T+3 settlement, monthly rebalancing, trailing stops, take-profit rules, and transaction costs.
 - **Live Signal Engine** — Produces daily Buy / Hold / Sell / Not-VN100 signals with a configurable grace band (`hold_n`) and trend filter.
 - **Streamlit Dashboard** — Interactive UI for backtesting, signal viewing, feature importance, IC charts, and Gemini-powered AI commentary.
-- **Experimental: LSTM-Attention Combiner** — Dynamically reweights WorldQuant alpha factors based on market context. Enable with `use_mega=True` in `walk_forward_cv`.
+- **Experimental: LSTM-Attention Combiner** — Dynamically reweights WorldQuant alpha factors based on market context. Tested via `use_mega=True` in `walk_forward_cv` but found to underperform the baseline out-of-sample.
 - **Experimental: GP Alpha Mining** — Uses genetic programming (`gplearn`) to evolve new alpha expressions from base features. Enable with `use_gp=True`.
 
 ---
 
 ## 📊 Backtest Results
 
-All results are **out-of-sample** from walk-forward cross-validation (12 folds, 2020–2026). No look-ahead bias — each fold trains strictly on past data with a 21-day gap before the test period.
+All results are **out-of-sample** from walk-forward cross-validation (24-month initial training window, 6-month test windows, 21-day gap). The test period covers **2021-08 → 2026-04 (56 months, 10 folds)**. No look-ahead bias — each fold trains strictly on past data.
 
 ### Baseline Model (XGBoost only)
 
 | Metric | Value |
 |---|---|
-| Avg OOS NDCG | **0.838** |
-| Top 20% Win Rate | **55.96%** |
-| Market Baseline Win Rate | 55.13% |
-| Excess Win Rate | **+0.83%** |
-| Simulated Portfolio ROI | **+483%** |
+| Avg OOS NDCG | **0.831** |
+| Top 20% Win Rate | **52.65%** |
+| Market Baseline Win Rate | 51.74% |
+| Excess Win Rate | **+0.91%** |
+| Total Return | **+93.86%** |
+| CAGR | **+15.24%** |
+| Sharpe Ratio | 0.64 |
+| Sortino Ratio | **2.07** |
+| Calmar Ratio | **1.63** |
+| Max Drawdown | **-9.33%** |
+| Profit Factor | **2.77** |
 
 ### Enhanced Model (XGBoost + WorldQuant Alphas + LSTM Combiner)
 
 | Metric | Value |
 |---|---|
-| Avg OOS NDCG | **0.836** |
-| Top 20% Win Rate | **56.43%** |
-| Market Baseline Win Rate | 55.13% |
-| Excess Win Rate | **+1.30%** |
+| Avg OOS NDCG | **0.833** |
+| Top 20% Win Rate | 51.63% |
+| Market Baseline Win Rate | 51.74% |
+| Excess Win Rate | **-0.11%** |
+| Total Return | +18.54% |
+| CAGR | +3.71% |
+| Sharpe Ratio | -0.05 |
+| Sortino Ratio | -0.15 |
+| Max Drawdown | -13.20% |
 
-> **Note on win rate lift:** A +0.83% to +1.30% excess win rate may look small, but in a cross-sectional ranking strategy applied daily across 100 stocks, small consistent edges compound significantly over time. The NDCG scores (0.83+) indicate the model reliably ranks the universe in the correct order across all market conditions tested.
+> **Why XGBoost wins:** The LSTM model's win rate actually fell *below* the market baseline out-of-sample, and its equity curve (CAGR +3.71%, Sharpe -0.05) was far inferior to the baseline (CAGR +15.24%, Sharpe 0.64). The Sortino ratio of 2.07 for the baseline confirms strong downside risk management — particularly during the VNINDEX crash of 2022, where the `dist_SMA_100` trend filter prevented new entries during the drawdown. The LSTM is retained in the codebase for research purposes only.
 
 ---
 
@@ -124,7 +137,7 @@ pip install -r requirements.txt
 | `vnstock` | Vietnamese market data (VCI source) |
 | `xgboost` | LambdaRank model |
 | `gplearn` | Symbolic regression for GP alpha mining |
-| `torch` | LSTM-Attention combiner |
+| `torch` | LSTM-Attention combiner (experimental) |
 | `streamlit` | Interactive dashboard |
 | `pandas`, `numpy` | Data processing |
 | `optuna` | Hyperparameter optimisation |
@@ -157,33 +170,70 @@ df = target_generating_ranking(df)    # Assigns risk-adjusted quintile labels fo
 
 Or run `notebooks/02_Feature_Engineering_Local.ipynb`.
 
-### 3. Model Training & Backtest
+### 3. (Optional) Feature Group Search
+
+```python
+from src.feature_search import search_best_roi_and_sharpe
+
+best_roi_row, best_sharpe_row, results_df = search_best_roi_and_sharpe(
+    df,
+    initial_capital=10_000,
+    walk_forward_kwargs=dict(initial_train_months=24, test_months=6, gap_days=21),
+    backtest_kwargs=dict(buy_fraction=0.05, hold_fraction=0.15,
+                         trend_filter_col='dist_SMA_100'),
+)
+```
+
+This exhaustively evaluates all combinations of feature groups and returns the best combo by ROI and Sharpe ratio. See `notebooks/02_Feature_Engineering_Kaggle.ipynb` for a full example.
+
+### 4. Model Training & Backtest
 
 ```python
 from src.models import walk_forward_cv
 
-# Baseline: XGBoost only
-results = walk_forward_cv(df, features)
+# Production: XGBoost only (recommended)
+results = walk_forward_cv(df, features, initial_train_months=24, test_months=6, gap_days=21)
 
-# With GP alpha mining
-results = walk_forward_cv(df, features, use_gp=True)
+# Experimental: with GP alpha mining
+results = walk_forward_cv(df, features, initial_train_months=24, test_months=6, gap_days=21, use_gp=True)
 
-# With LSTM-Attention alpha combiner
-results = walk_forward_cv(df, features, use_mega=True)
+# Experimental: with LSTM-Attention alpha combiner (unstable out-of-sample)
+results = walk_forward_cv(df, features, initial_train_months=24, test_months=6, gap_days=21, use_mega=True)
 ```
 
 Or run `notebooks/03_Model_Training_and_Evaluation_Local.ipynb`.
 
-### 4. Hyperparameter Tuning (Optional)
+### 5. Hyperparameter Tuning (Optional)
 
 ```python
 from src.models import optimize_xgboost_ranker
 
 best_params = optimize_xgboost_ranker(df, features, n_trials=50)
-results = walk_forward_cv(df, features, model_params=best_params)
+results = walk_forward_cv(df, features, model_params=best_params,
+                          initial_train_months=24, test_months=6, gap_days=21)
 ```
 
-### 5. Live Signal Generation
+### 6. Backtest & Evaluation
+
+```python
+from src.evaluation import run_xgboost_backtest, compute_metrics, capital_over_time
+
+result = run_xgboost_backtest(
+    df=results,
+    model=None,           # use pred_score column from walk_forward_cv
+    features=None,
+    initial_capital=10000,
+    buy_fraction=0.05,
+    hold_fraction=0.15,
+    time_of_rebalance='M',
+    trend_filter_col='dist_SMA_100'
+)
+
+capital_over_time(result)
+metrics = compute_metrics(result, initial_capital=10000)
+```
+
+### 7. Live Signal Generation
 
 ```python
 from src.inference import generate_paper_trade_signals
@@ -197,7 +247,7 @@ buy, hold, sell, not_vn100, rankings = generate_paper_trade_signals(
 )
 ```
 
-### 6. Dashboard
+### 8. Dashboard
 
 The dashboard is **cloud-hosted** — access it directly at the link above. It is not designed for local execution as it relies on Streamlit Cloud secrets (`GITHUB_TOKEN`, `GOOGLE_API_KEY`).
 
@@ -210,24 +260,36 @@ Raw OHLCV Data (VN100 universe, daily, from 2018)
       │
       ▼
 Feature Engineering (src/features.py + src/alpha_mining.py)
-  ├── Momentum:      log returns (1W, 1M, 3M, 6M, 1Y)
-  ├── Trend:         SMA/EMA (14, 20, 50, 100), distance from MA
-  ├── Volatility:    annualised rolling std (1W, 1M, 3M, 6M), shock ratios
-  ├── Volume:        weekly & monthly surge ratios
-  ├── Oscillator:    RSI-14
-  └── Alpha Factors: WorldQuant Alpha #6, #12, #24, #28, #41, #53, #54, #60, #101
+  ├── Momentum:        log returns (1W, 1M, 3M, 6M, 1Y), skip-1M return
+  ├── Trend:           SMA/EMA (9, 21, 50, 100, 200), distance from MA
+  ├── Volatility:      annualised rolling std (1W, 1M, 3M, 6M), shock ratios
+  ├── Volume:          weekly & monthly surge ratios, OBV trend
+  ├── Oscillator:      RSI-14
+  ├── Price Structure: 52-week high distance, price-volume divergence
+  └── Alpha Factors:   WorldQuant Alpha #6, #12, #24, #28, #41, #53, #54, #60, #101
+      │
+      ▼
+(Optional) Feature Group Search (src/feature_search.py)
+  └── Exhaustive combination search to find best feature groups by ROI / Sharpe
       │
       ▼
 Target: Risk-Adjusted Quintile (next_1m_ret / volatility_3m → qcut into 5 bins)
       │
       ▼
 Walk-Forward Cross-Validation (src/models.py)
-  ├── Initial train window: 12 months
+  ├── Initial train window: 24 months
   ├── Test window:          6 months (rolling)
   └── Gap:                  21 days (prevents look-ahead)
       │
       ▼
-XGBoost LambdaRank (rank:ndcg)          [Optional: LSTM-Attention + GP Alphas]
+XGBoost LambdaRank (rank:ndcg)   ✅ Production
+[Experimental: LSTM-Attention + GP Alphas — unstable OOS, not recommended for production]
+      │
+      ▼
+Realistic Backtest (src/evaluation.py)
+  ├── T+3 settlement, monthly rebalancing
+  ├── Trailing stop (-10%), take-profit (+50%)
+  └── Transaction costs (fee + tax + per-share fee)
       │
       ▼
 Daily Cross-Sectional Ranking → Buy / Hold / Sell Signals (src/inference.py)
@@ -251,6 +313,7 @@ Daily Cross-Sectional Ranking → Buy / Hold / Sell Signals (src/inference.py)
 - **Win Rate Lift** — Top-quintile pick win rate vs. market baseline (percentage of picks with positive 1-month return)
 - **Information Coefficient (IC)** — Spearman correlation of each feature with next-month returns; reported as IC Mean, IC Std, and IC IR (Mean/Std)
 - **NDCG Score** — Normalised Discounted Cumulative Gain; the ranking quality metric directly optimised by the model, computed daily across the OOS test period
+- **CAGR / Sharpe / Sortino / Calmar / Max Drawdown** — Full risk-adjusted performance metrics computed by `evaluation.compute_metrics()` on the simulated equity curve
 - **Feature Importance** — XGBoost gain-based feature attribution
 
 ---
@@ -276,17 +339,13 @@ Three workflows keep the system running automatically:
 
 ---
 
-## 📄 License
+## 📄 License & Acknowledgments
 
-This project is licensed under [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/) — free to use for research and education with attribution. Contact the author before using in commercial applications.
-
-## License & Acknowledgments
-
-### License
-This project is licensed under the **GNU General Public License v3.0** - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the **GNU General Public License v3.0** — see the [LICENSE](LICENSE) file for details.
 
 ### Acknowledgments
-This project utilizes the following open-source libraries:
-* **gplearn**: Licensed under GNU GPL v3.0. Special thanks to the authors for providing the symbolic regression framework used in this project's feature engineering.
-* **vnstock**: For providing the API access to Vietnam stock market data.
+
+This project utilises the following open-source libraries:
+* **gplearn**: Licensed under GNU GPL v3.0. Special thanks to the authors for providing the symbolic regression framework used in this project's GP alpha mining.
+* **vnstock**: For providing API access to Vietnam stock market data.
 * **XGBoost & Scikit-learn**: For the core machine learning and ranking implementation.
