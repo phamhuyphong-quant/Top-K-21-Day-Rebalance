@@ -86,18 +86,61 @@ def _save(df: pd.DataFrame, file_path: str) -> None:
     df.to_parquet(file_path, index=False)
 
 
+def _fetch_quote(symbol: str, start: str, end: str, source: str) -> pd.DataFrame | None:
+    """
+    Fetches OHLCV history for a single symbol from the given source.
+    Returns a cleaned DataFrame on success, or None if the source fails.
+    Retries on rate-limit responses; raises immediately on other errors
+    so the caller can try a fallback source.
+    """
+    while True:
+        df = Quote(symbol=symbol, source=source).history(
+            start=start,
+            end=end,
+            interval="1D",
+        )
+
+        if df is None or df.empty:
+            log.warning("! %s [%s] — no data returned", symbol, source)
+            return None
+
+        df = df.rename(columns={"time": "date"})
+        df["Symbol"] = str(symbol)
+        df["date"] = (
+            pd.to_datetime(df["date"], errors="coerce")
+            .dt.normalize()
+            .dt.tz_localize(None)
+        )
+        df = df.drop_duplicates(subset=["date", "Symbol"]).sort_values(["Symbol", "date"])
+        df = clean_ohlcv(df)
+
+        if df.empty:
+            log.warning("! %s [%s] — empty after cleaning", symbol, source)
+            return None
+
+        return df
+
+
 def update_market_data(
     file_path: str,
     symbols: list,
     start_date: str = "2019-01-01",
     batch_size: int = 5,
     base_sleep: float = 3.0,
+    sources: list[str] = ("VCI", "KBS"),
+    filter_symbols: bool = True,
 ) -> None:
     """
     Fetches full stock history from start_date to today for every symbol.
+    Tries each source in `sources` order; falls back to the next source on
+    any timeout, rate-limit, or other error.
     Existing data is preserved; freshly fetched rows overwrite on (date, Symbol).
     OHLC violations are fixed by ffill-ing the entire candle; volume is untouched.
-    No rows are dropped. Removes symbols from existing data if they are no longer in the provided symbols list.
+    No rows are dropped.
+
+    filter_symbols: if True (default), purges rows from existing data whose
+    Symbol is no longer in the provided symbols list. Set to False to keep
+    all previously stored symbols regardless.
     """
     today_str = pd.Timestamp.today().normalize().strftime("%Y-%m-%d")
 
@@ -108,13 +151,14 @@ def update_market_data(
             pd.to_datetime(existing_df["date"]).dt.normalize().dt.tz_localize(None)
         )
 
-        initial_count = len(existing_df)
-        # Keep only rows where 'Symbol' is in the current symbols (VN100) list
-        existing_df = existing_df[existing_df['Symbol'].isin(symbols)]
-        
-        removed_count = initial_count - len(existing_df)
-        if removed_count > 0:
-            log.info("Purged %d rows: Symbols no longer in the current list.", removed_count)
+        if filter_symbols:
+            initial_count = len(existing_df)
+            existing_df = existing_df[existing_df["Symbol"].isin(symbols)]
+
+            removed_count = initial_count - len(existing_df)
+            if removed_count > 0:
+                log.info("Purged %d rows: Symbols no longer in the current list.", removed_count)
+
         log.info("Loaded existing data: %d rows", len(existing_df))
     else:
         existing_df = pd.DataFrame()
@@ -123,51 +167,48 @@ def update_market_data(
     processed = 0
 
     for symbol in symbols:
-        fetch_start = start_date  # always full history (as requested)
+        df = None
 
-        while True:
+        for source in sources:
             try:
-                df = Quote(symbol=symbol, source="VCI").history(
-                    start=fetch_start,
-                    end=today_str,
-                    interval="1D",
-                )
+                log.info("→ %s fetching from [%s]", symbol, source)
+                df = _fetch_quote(symbol, start_date, today_str, source)
 
-                if df is not None and not df.empty:
-                    df = df.rename(columns={"time": "date"})
-                    df["Symbol"] = str(symbol)
-                    df["date"] = (
-                        pd.to_datetime(df["date"], errors="coerce")
-                        .dt.normalize()
-                        .dt.tz_localize(None)
-                    )
-                    df = df.drop_duplicates(subset=["date", "Symbol"]).sort_values(
-                        ["Symbol", "date"]
-                    )
-                    df = clean_ohlcv(df)
+                if df is not None:
+                    log.info("✓ %s [%s] — %d rows fetched", symbol, source, len(df))
+                    break  # success; no need to try next source
 
-                    if not df.empty:
-                        new_data.append(df)
-                        log.info("✓ %s — %d rows fetched", symbol, len(df))
-                    else:
-                        log.warning("! %s — empty after cleaning", symbol)
-                else:
-                    log.warning("! %s — no data returned from API", symbol)
-
-                time.sleep(base_sleep)
-                break
+                # Source returned empty — try next source immediately
+                log.warning("! %s [%s] — no usable data, trying next source…", symbol, source)
 
             except Exception as exc:
                 msg = str(exc)
-                log.error("Error on %s: %s", symbol, msg)
-                match = re.search(r"(\d+)\s*(giây|seconds?)", msg, re.IGNORECASE)
-                if match:
-                    wait = int(match.group(1)) + 1
-                    log.info("⏳ Rate limit — waiting %ds", wait)
-                    time.sleep(wait)
-                else:
-                    break  # non-rate-limit error; skip this symbol
+                log.error("✗ %s [%s] error: %s", symbol, source, msg)
 
+                # If it's a rate-limit with an explicit wait time, honour it and
+                # retry the SAME source once before falling back.
+                rate_match = re.search(r"(\d+)\s*(giây|seconds?)", msg, re.IGNORECASE)
+                if rate_match:
+                    wait = int(rate_match.group(1)) + 1
+                    log.info("⏳ Rate limit on [%s] — waiting %ds then retrying…", source, wait)
+                    time.sleep(wait)
+                    try:
+                        df = _fetch_quote(symbol, start_date, today_str, source)
+                        if df is not None:
+                            log.info("✓ %s [%s] — %d rows after retry", symbol, source, len(df))
+                            break
+                    except Exception as retry_exc:
+                        log.error("✗ %s [%s] retry failed: %s", symbol, source, retry_exc)
+
+                # Fall through to next source
+                log.warning("⚠ %s [%s] failed — falling back to next source…", symbol, source)
+
+        if df is not None:
+            new_data.append(df)
+        else:
+            log.error("✗ %s — all sources exhausted, symbol skipped.", symbol)
+
+        time.sleep(base_sleep)
         processed += 1
 
         # Batch save every `batch_size` symbols
@@ -180,7 +221,7 @@ def update_market_data(
     # Final save
     if new_data:
         existing_df = _merge_and_dedup(existing_df, new_data)
-        existing_df = existing_df[existing_df['date'] >= pd.Timestamp(start_date)]
+        existing_df = existing_df[existing_df["date"] >= pd.Timestamp(start_date)]
         _save(existing_df, file_path)
         log.info("💾 Final save — %d total rows", len(existing_df))
 
@@ -205,50 +246,56 @@ def fetch_indicator_data(
     ind_symbol: str,
     start_date: str,
     file_path: str,
+    sources: list[str] = ("VCI", "KBS"),
 ) -> None:
     """
-    Fetches market index data (e.g. VNINDEX), cleans it,
-    and saves to a Parquet file.
+    Fetches market index data (e.g. VNINDEX), cleans it, and saves to a Parquet
+    file. Tries each source in `sources` order; falls back on any error.
     """
     today_str = pd.Timestamp.today().normalize().strftime("%Y-%m-%d")
 
-    try:
-        df = Quote(symbol=ind_symbol, source="VCI").history(
-            start=start_date, end=today_str, interval="1D"
-        )
+    for source in sources:
+        try:
+            log.info("→ %s fetching from [%s]", ind_symbol, source)
+            df = Quote(symbol=ind_symbol, source=source).history(
+                start=start_date, end=today_str, interval="1D"
+            )
 
-        if df is None or df.empty:
-            log.warning("! No data returned for %s", ind_symbol)
-            return
+            if df is None or df.empty:
+                log.warning("! %s [%s] — no data returned, trying next source…", ind_symbol, source)
+                continue
 
-        df = df.rename(columns={"time": "date"})
-        df["date"] = (
-            pd.to_datetime(df["date"], errors="coerce")
-            .dt.normalize()
-            .dt.tz_localize(None)
-        )
-        df = df.dropna()
+            df = df.rename(columns={"time": "date"})
+            df["date"] = (
+                pd.to_datetime(df["date"], errors="coerce")
+                .dt.normalize()
+                .dt.tz_localize(None)
+            )
+            df = df.dropna()
 
-        if df.empty:
-            log.warning("! %s data empty after cleaning", ind_symbol)
-            return
+            if df.empty:
+                log.warning("! %s [%s] — empty after cleaning, trying next source…", ind_symbol, source)
+                continue
 
-        _save(df, file_path)
-        log.info("✓ %s — %d rows saved to %s", ind_symbol, len(df), file_path)
+            _save(df, file_path)
+            log.info("✓ %s [%s] — %d rows saved to %s", ind_symbol, source, len(df), file_path)
+            return  # success
 
-    except Exception as exc:
-        log.error("Error fetching %s: %s", ind_symbol, exc)
+        except Exception as exc:
+            log.error("✗ %s [%s] error: %s — trying next source…", ind_symbol, source, exc)
+
+    log.error("✗ %s — all sources exhausted, no data saved.", ind_symbol)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     MARKET_PATH    = "market_data.parquet"
     VNINDEX_PATH   = "vnindex_data.parquet"
-    START_DATE     = "2019-01-01"
+    START_DATE     = "2018-01-01"
 
     log.info("🤖 Starting data collection…")
 
-    vn100_symbols = build_vn100()
+    vn100_symbols = build_vn100(fetching=True)
 
     update_market_data(
         file_path=MARKET_PATH,
