@@ -99,10 +99,16 @@ def volume_quality(df):
     df['price_vol_divergence'] = df['log_ret_1m'] / (df['volume_surge_monthly'] + 0.001)
     return df
 
-def build_features(df):
+def build_features(df, min_stocks_per_date: int = 50):
+    """
+    Build all features for the dataset.
+
+    min_stocks_per_date: dates where fewer than this many symbols survive
+    the NaN-drop are removed entirely from the output. Defaults to 10.
+    """
     df = df.copy()
     df = df.sort_values(["Symbol", "date"])
-    
+
     df = return_ln(df)
     df = volatility(df)
     df = MA(df)
@@ -114,10 +120,22 @@ def build_features(df):
     feature_cols = [col for col in df.columns if col not in ['Symbol', 'date', 'close', 'high', 'low', 'open', 'volume']]
     df[feature_cols] = df[feature_cols].replace([np.inf, -np.inf], np.nan)
     df.dropna(subset=feature_cols, inplace=True)
-    
+
+    # Drop dates that have fewer than min_stocks_per_date surviving symbols
+    stocks_per_date = df.groupby("date")["Symbol"].transform("count")
+    thin_mask = stocks_per_date < min_stocks_per_date
+    if thin_mask.any():
+        dropped_dates = df.loc[thin_mask, "date"].nunique()
+        import logging
+        logging.getLogger(__name__).warning(
+            "Dropping %d date(s) with fewer than %d stocks after NaN removal.",
+            dropped_dates, min_stocks_per_date,
+        )
+        df = df[~thin_mask]
+
     df['next_1m_ret'] = df.groupby('Symbol')['close'].transform(lambda x: np.log(x.shift(-21) / x))
     df['next_1w_ret'] = df.groupby('Symbol')['close'].transform(lambda x: np.log(x.shift(-5) / x))
-    
+
     df.index = range(1, len(df) + 1)
     return df
 
