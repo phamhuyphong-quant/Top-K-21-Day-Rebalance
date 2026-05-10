@@ -209,7 +209,9 @@ def walk_forward_cv(df, features, model_params=None, initial_train_months=12,
         
         # 5. Score the test fold
         test_df['pred_score'] = ranker.predict(X_test)
-        
+        test_df['pred_quintile'] = test_df.groupby('date')['pred_score'].transform(
+    lambda x: pd.qcut(x.rank(method='first'), 5, labels=[1, 2, 3, 4, 5])
+)
         # --- COMPUTE DAILY NDCG ---
         daily_ndcg = []
         for d, grp in test_df.groupby('date'):
