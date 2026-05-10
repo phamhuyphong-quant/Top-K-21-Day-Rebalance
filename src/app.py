@@ -421,11 +421,9 @@ with st.spinner("Computing feature influence and ranking diagnostics..."):
         st.plotly_chart(fig_q, use_container_width=True)
     else:
         # Compute pred_quintile from pred_score if not already present
-        honest_test_df['pred_quintile'] = pd.qcut(
-            honest_test_df.groupby('date')['pred_score']
-                        .transform(lambda x: x.rank(pct=True)),
-            q=5, labels=[1,2,3,4,5]
-        )
+        honest_test_df['pred_quintile'] = honest_test_df.groupby('date')['pred_score'].transform(
+    lambda x: pd.qcut(x.rank(method='first'), 5, labels=[1,2,3,4,5])
+)
         quintile_returns = honest_test_df.groupby('pred_quintile', observed=False)['next_1m_ret'].mean().reset_index()
         fig_q = go.Figure()
         fig_q.add_trace(go.Bar(
