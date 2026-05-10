@@ -20,31 +20,40 @@ sys.path.insert(0, '/kaggle/working/repo')
 
 from src.features import build_features, target_generating_ranking
 from src.evaluation import generate_and_save_pretrained_model
+from src.alpha_mining import WorldQuantAlphas
 import pandas as pd
 
-df = pd.read_parquet('data/market_data.parquet')
-df = df[df['close'] > 0].copy()
-df = build_features(df)
+df_raw = pd.read_parquet('data/market_data.parquet')
+wq = WorldQuantAlphas(df_raw)
+wq_cols_df = wq.generate_all()
+df_raw[wq_cols_df.columns] = wq_cols_df.values
+df = build_features(df_raw)
 df = target_generating_ranking(df)
 
-best_features = ["volatility_1w",
-        "volatility_1m",
-        "volatility_3m",
-        "volatility_6m",
-        "volatility_shock_monthly",
-        "volatility_shock_weekly",
-                  "dist_SMA_9",
-                  "dist_SMA_21",
-                  "dist_SMA_50","dist_SMA_100","dist_SMA_200",
-        "dist_EMA_9", "dist_EMA_21", "dist_EMA_50","dist_EMA_100","dist_EMA_200",
-                     "volume_surge_monthly",
-        "volume_surge_weekly",
-        "obv_trend",
-        "price_vol_divergence",
-                  "RSI_14",
-                  "dist_52w_high",
-    "log_ret_skip1m",
-                 ]
+best_features = ['log_ret_1w',
+                 'log_ret_1m', 
+                 'log_ret_3m', 'log_ret_6m', 
+                 'log_ret_1y',
+                 
+                 'volatility_1w',
+                 'volatility_1m',
+                 'volatility_3m',
+                 'volatility_6m',
+                 'volatility_shock_monthly',
+                 'volatility_shock_weekly',
+                 'volume_surge_monthly',
+                 'volume_surge_weekly',
+                 'obv_trend',
+                 'price_vol_divergence',
+                 
+                 'WQ_Alpha_012',
+                 'WQ_Alpha_024', 
+                 'WQ_Alpha_028', 
+                 'WQ_Alpha_053',
+                 'WQ_Alpha_060',
+                 
+                 'dist_52w_high', 
+                 'log_ret_skip1m']
 
 generate_and_save_pretrained_model(
     df=df,
