@@ -7,7 +7,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.features import build_features, target_generating_ranking
 from src.evaluation import generate_and_save_pretrained_model
-
+from src.alpha_mining import WorldQuantAlphas
 def main():
     import random
     import numpy as np
@@ -22,33 +22,41 @@ def main():
         raise FileNotFoundError(f"❌ Could not find {data_path}. Ensure you run this from the project root.")
         
     print(f"📦 Loading data from {data_path}...")
-    df = pd.read_parquet(data_path)
+    df_raw = pd.read_parquet(data_path)
     
     # 2. Process features and targets (matching app.py logic exactly)
     print("⚙️ Building features and targets...")
-    df = df[df["close"] > 0].copy()
-    df = build_features(df)
+    wq = WorldQuantAlphas(df_raw)
+    wq_cols_df = wq.generate_all()
+    df_raw[wq_cols_df.columns] = wq_cols_df.values
+    df = build_features(df_raw)
     df = target_generating_ranking(df)
     
     # 3. Define the optimized feature list
-    best_features = ["volatility_1w",
-        "volatility_1m",
-        "volatility_3m",
-        "volatility_6m",
-        "volatility_shock_monthly",
-        "volatility_shock_weekly",
-                  "dist_SMA_9",
-                  "dist_SMA_21",
-                  "dist_SMA_50","dist_SMA_100","dist_SMA_200",
-        "dist_EMA_9", "dist_EMA_21", "dist_EMA_50","dist_EMA_100","dist_EMA_200",
-                     "volume_surge_monthly",
-        "volume_surge_weekly",
-        "obv_trend",
-        "price_vol_divergence",
-                  "RSI_14",
-                  "dist_52w_high",
-    "log_ret_skip1m",
-                 ]
+    best_features = ['log_ret_1w',
+                 'log_ret_1m', 
+                 'log_ret_3m', 'log_ret_6m', 
+                 'log_ret_1y',
+                 
+                 'volatility_1w',
+                 'volatility_1m',
+                 'volatility_3m',
+                 'volatility_6m',
+                 'volatility_shock_monthly',
+                 'volatility_shock_weekly',
+                 'volume_surge_monthly',
+                 'volume_surge_weekly',
+                 'obv_trend',
+                 'price_vol_divergence',
+                 
+                 'WQ_Alpha_012',
+                 'WQ_Alpha_024', 
+                 'WQ_Alpha_028', 
+                 'WQ_Alpha_053',
+                 'WQ_Alpha_060',
+                 
+                 'dist_52w_high', 
+                 'log_ret_skip1m']
     
     # Sanity check: Ensure all features were built successfully
     missing_features = [f for f in best_features if f not in df.columns]
