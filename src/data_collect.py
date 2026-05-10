@@ -221,7 +221,6 @@ def update_market_data(
     # Final save
     if new_data:
         existing_df = _merge_and_dedup(existing_df, new_data)
-        existing_df = existing_df[existing_df["date"] >= pd.Timestamp(start_date)]
         _save(existing_df, file_path)
         log.info("💾 Final save — %d total rows", len(existing_df))
 
@@ -232,13 +231,12 @@ def _merge_and_dedup(existing: pd.DataFrame, new_chunks: list) -> pd.DataFrame:
     On (date, Symbol) conflict the new fetch wins (keep='last').
     """
     new_df = pd.concat(new_chunks, ignore_index=True)
-    if existing.empty:
-        combined = new_df
-    else:
-        combined = pd.concat([existing, new_df], ignore_index=True)
+    combined = new_df if existing.empty else pd.concat([existing, new_df], ignore_index=True)
     combined = combined.drop_duplicates(subset=["date", "Symbol"], keep="last")
+    combined = combined[combined["date"] >= "2018-01-01"]          # ← add this line
     combined = combined.sort_values(["Symbol", "date"]).reset_index(drop=True)
     return combined
+
 
 
 # ── Index / indicator data ────────────────────────────────────────────────────
