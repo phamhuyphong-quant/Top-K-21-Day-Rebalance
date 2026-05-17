@@ -1,6 +1,19 @@
 import pandas as pd
 import numpy as np
+import torch
+import random
+import os
+import logging
+def seed_everything(seed=42):
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)  # If using PyTorch
+    torch.cuda.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
+seed_everything(42)
 def rsi(df, window_length=14):
     grouped = df.groupby("Symbol")
     delta = grouped["close"].diff()
@@ -29,13 +42,12 @@ def volume(df):
 
 def return_ln(df):
     grouped_close = df.groupby("Symbol")["close"]
-    close_shift_1 = grouped_close.shift(1)
     
-    df["log_ret_1w"] = np.log(close_shift_1 / grouped_close.shift(6))
-    df["log_ret_1m"] = np.log(close_shift_1 / grouped_close.shift(21))
-    df["log_ret_3m"] = np.log(close_shift_1 / grouped_close.shift(63))
-    df["log_ret_6m"] = np.log(close_shift_1 / grouped_close.shift(126))
-    df["log_ret_1y"] = np.log(close_shift_1 / grouped_close.shift(252))
+    df["log_ret_1w"] = np.log(df["close"] / grouped_close.shift(5))
+    df["log_ret_1m"] = np.log(df["close"] / grouped_close.shift(21))
+    df["log_ret_3m"] = np.log(df["close"] / grouped_close.shift(63))
+    df["log_ret_6m"] = np.log(df["close"] / grouped_close.shift(126))
+    df["log_ret_1y"] = np.log(df["close"] / grouped_close.shift(252))
     
     return df
 
@@ -92,8 +104,9 @@ def volume_quality(df):
     # On-Balance Volume trend (normalized)
     grouped = df.groupby("Symbol")
     df['obv_trend'] = (grouped.apply(
-        lambda x: (np.sign(x['close'].diff()) * x['volume']).rolling(21).sum()
-    )).reset_index(level=0, drop=True) / df['vol_1m']
+    lambda x: (np.sign(x['close'].diff()) * x['volume']).rolling(21).sum(),
+    include_groups=False
+)).reset_index(level=0, drop=True) / df['vol_1m']
 
     # Price-volume divergence — rising price on falling volume is a warning
     df['price_vol_divergence'] = df['log_ret_1m'] / (df['volume_surge_monthly'] + 0.001)
@@ -104,7 +117,7 @@ def build_features(df, min_stocks_per_date: int = 50):
     Build all features for the dataset.
 
     min_stocks_per_date: dates where fewer than this many symbols survive
-    the NaN-drop are removed entirely from the output. Defaults to 10.
+    the NaN-drop are removed entirely from the output. Defaults to 50.
     """
     df = df.copy()
     df = df.sort_values(["Symbol", "date"])
@@ -118,6 +131,7 @@ def build_features(df, min_stocks_per_date: int = 50):
     df = price_structure(df)
 
     feature_cols = [col for col in df.columns if col not in ['Symbol', 'date', 'close', 'high', 'low', 'open', 'volume']]
+    df[feature_cols] = df.groupby('Symbol')[feature_cols].shift(1)
     df[feature_cols] = df[feature_cols].replace([np.inf, -np.inf], np.nan)
     df.dropna(subset=feature_cols, inplace=True)
 
@@ -133,11 +147,16 @@ def build_features(df, min_stocks_per_date: int = 50):
         )
         df = df[~thin_mask]
 
-    df['next_1m_ret'] = df.groupby('Symbol')['close'].transform(lambda x: np.log(x.shift(-21) / x))
-    df['next_1w_ret'] = df.groupby('Symbol')['close'].transform(lambda x: np.log(x.shift(-5) / x))
+ 
 
     df.index = range(1, len(df) + 1)
     return df
+def build_targets(df):
+    df = df.copy()
+    df['next_1m_ret'] = df.groupby('Symbol')['close'].transform(lambda x: np.log(x.shift(-21) / x))
+    df['next_1w_ret'] = df.groupby('Symbol')['close'].transform(lambda x: np.log(x.shift(-5) / x))
+    return df
+
 
 def target_generating_ranking(df, freq='M'):
     df = df.copy()
@@ -146,8 +165,7 @@ def target_generating_ranking(df, freq='M'):
         raise ValueError("The 'freq' parameter must be either 'M' or 'W'.")
 
     df = df.sort_values(by=['date', 'Symbol'])
-    df['qid'] = df.groupby('date').ngroup()
-
+    
     if freq == 'M':
         vol = df['volatility_3m'].replace(0, np.nan)
         df['risk_adj_ret'] = df['next_1m_ret'] / vol
@@ -167,7 +185,7 @@ def target_generating_ranking(df, freq='M'):
     df = df.dropna(subset=['target_quintile'])
     df['target_quintile'] = df['target_quintile'].astype(int) 
     df = df.sort_values(by=['date', 'Symbol'])
-    
+    df['qid'] = df.groupby('date').ngroup() 
     return df
 
 def apply_cross_sectional_ranking(df, feature_cols):

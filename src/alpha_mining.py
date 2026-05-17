@@ -2,13 +2,14 @@ import numpy as np
 import pandas as pd
 from gplearn.genetic import SymbolicTransformer
 from scipy.stats import spearmanr
+import sys,os
 # --- CÁC TOÁN TỬ WORLDQUANT CƠ BẢN ---
 # --- WORLDQUANT BASE OPERATORS ---
 # --- CẬP NHẬT TRONG alpha_mining.py ---
 
-import numpy as np
-import pandas as pd
-
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from src.features import seed_everything
+seed_everything(42)
 def to_series(df, col):
     if isinstance(col, str):
         return df[col]
@@ -53,8 +54,6 @@ class WorldQuantAlphas:
         self.df = df.copy()
         # Ensure data is sorted correctly
         self.df = self.df.sort_values(by=['Symbol', 'date'])
-        for col in ['open', 'high', 'low', 'close', 'volume']:
-            self.df[col] = self.df.groupby('Symbol')[col].shift(1)
         # All calculations below use T-1 data to prevent look-ahead bias
 
     def get_alpha_012(self):
@@ -64,30 +63,15 @@ class WorldQuantAlphas:
         delta_close = ts_delta(self.df, 'close', 1)
         return np.sign(delta_vol) * (-1 * delta_close)
 
-    def get_alpha_041(self):
-        # Alpha#41: (((high * low)^0.5) - vwap)
-        # Using close as a proxy for vwap (true VWAP not available in this data source)
-        vwap = self.df['close'] 
-        return np.sqrt(self.df['high'] * self.df['low']) - vwap
-
-    def get_alpha_054(self):
-        # Alpha#54: ((-1 * ((low - close) * (open^5))) / ((low - high) * (close^5)))
-        # Logic: Captures anomalies between open/close price and intraday range
-        numerator = -1 * (self.df['low'] - self.df['close']) * (self.df['open'] ** 5)
-        denominator = (self.df['low'] - self.df['high']) * (self.df['close'] ** 5)
-        # Tránh chia cho 0
-        return np.where(denominator == 0, 0, numerator / denominator)
-
-    def get_alpha_101(self):
-        # Alpha#101: ((close - open) / ((high - low) + 0.001))
-        # Logic: Measures intraday close strength (intraday momentum)
-        return (self.df['close'] - self.df['open']) / ((self.df['high'] - self.df['low']) + 0.001)
-
     def get_alpha_006(self):
-        g = self.df.groupby('Symbol')
-        return -1 * g['open'].transform(
-        lambda x: x.rolling(10).corr(self.df.loc[x.index, 'volume'])
-    ).fillna(0)
+        # Ensure both columns are aligned before groupby
+        df_sorted = self.df.sort_values(['Symbol', 'date']).copy()
+        g = df_sorted.groupby('Symbol')
+
+        return -1 * g.apply(
+            lambda x: x['open'].rolling(10).corr(x['volume'])
+        ).reset_index(level=0, drop=True).reindex(self.df.index).fillna(0)
+
     def get_alpha_024(self):
         # Alpha#24: conditional mean-reversion based on 100-day price trend direction
         
@@ -111,10 +95,15 @@ class WorldQuantAlphas:
         )
     def get_alpha_028(self):
         # Alpha#28: scale(((correlation(adv20, low, 5) + ((high + low) / 2)) - close))
-        adv20 = ts_mean(self.df, 'volume', 20)
-        corr = self.df.groupby('Symbol')['volume'].transform(
-    lambda x: x.rolling(5).corr(self.df.loc[x.index, 'low'])
-)
+        # Fix 1: compute adv20 and attach to df_sorted so it stays aligned inside the lambda
+        # Fix 2: correlate adv20 (not volume) with low, as per the formula
+        df_sorted = self.df.sort_values(['Symbol', 'date']).copy()
+        df_sorted['adv20'] = ts_mean(df_sorted, 'volume', 20)
+
+        corr = df_sorted.groupby('Symbol').apply(
+            lambda x: x['adv20'].rolling(5).corr(x['low'])
+        ).reset_index(level=0, drop=True).reindex(self.df.index).fillna(0)
+
         return corr + ((self.df['high'] + self.df['low']) / 2) - self.df['close']
 
     def get_alpha_053(self):
@@ -133,10 +122,7 @@ class WorldQuantAlphas:
         """Computes all alpha factors and returns a DataFrame with WQ_Alpha_* columns."""
         print("Generating WorldQuant Alphas...")
         self.df['WQ_Alpha_012'] = self.get_alpha_012()
-        #self.df['WQ_Alpha_041'] = self.get_alpha_041()
-        #self.df['WQ_Alpha_054'] = self.get_alpha_054()
-        #self.df['WQ_Alpha_101'] = self.get_alpha_101()
-        #self.df['WQ_Alpha_006'] = self.get_alpha_006()
+        self.df['WQ_Alpha_006'] = self.get_alpha_006()
         self.df['WQ_Alpha_024'] = self.get_alpha_024()
         self.df['WQ_Alpha_028'] = self.get_alpha_028()
         self.df['WQ_Alpha_053'] = self.get_alpha_053()
@@ -144,7 +130,7 @@ class WorldQuantAlphas:
         
         # Fill inf/NaN with 0 and return only the new alpha columns
         alpha_cols = [c for c in self.df.columns if 'WQ_Alpha_' in c]
-        self.df[alpha_cols] = self.df[alpha_cols].replace([np.inf, -np.inf], np.nan).fillna(0)
+        self.df[alpha_cols] = self.df[alpha_cols].replace([np.inf, -np.inf], np.nan)
         return self.df[alpha_cols]
     
 
@@ -157,7 +143,6 @@ def add_and_filter_alphas(gp_model, original_df, input_features):
     X_filled = np.nan_to_num(X_full, nan=0.0, posinf=0.0, neginf=0.0)
     
     # 2. Generate 10 alpha expressions
-    alpha_values = gp_model.transform(X_filled)
     
     alpha_values = gp_model.transform(X_filled)
 
