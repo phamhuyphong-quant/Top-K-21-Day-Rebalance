@@ -34,17 +34,23 @@ def build_vn100(fetching=False):
         log.info("VN30=%d  VNMID=%d  VN100=%d", len(vn30), len(vnmid), len(vn100))
         return vn100
 
-    return [
-    "AAA", "ACB", "ADS", "VRE", "AGR", "ANV", "BFC", "BHN", "BID", "BMI",
-    "BMP", "BSI", "BVH", "BWE", "CII", "CMG", "CTS", "CSV", "CTD", "CTG",
-    "DBC", "DCL", "DCM", "DGC", "DGW", "DHG", "DIG", "DMC", "DPM", "DPR",
-    "DRC", "DVP", "DXG", "EIB", "FMC", "FPT", "FTS", "GAS", "GEX", "GMD",
-    "HAG", "HCM", "HDB", "HDC", "HDG", "HPG", "HSG", "HT1", "HVN", "IMP",
-    "KBC", "KDC", "KDH", "LPB", "MBB", "MSN", "MWG", "NKG", "NLG", "NT2",
-    "NVL", "PAN", "PC1", "PDR", "PHR", "PLX", "PNJ", "POW", "PPC", "PTB",
-    "PVD", "PVT", "RAL", "REE", "SAB", "SBT", "SCS", "SHB", "SJS", "SSI",
-    "STB", "STK", "TBC", "TCB", "TCH", "TCM", "TMS", "TRA", "VCB", "VCF",
-    "VCG", "VCI", "VGC", "VHC", "VIB", "VIC", "VJC", "VND", "VNM", "VPB"]
+    return ['ACB', 'ANV', 'BCM', 'BID', 'BMP', 'BSI', 
+            'BSR', 'BVH', 'BWE', 'CII', 'CMG', 'CTD',
+              'CTG', 'CTR', 'CTS', 'DBC', 'DCM', 'DGC',
+                'DGW', 'DIG', 'DPM', 'DSE', 'DXG', 'DXS',
+                  'EIB', 'EVF', 'FPT', 'FRT', 'FTS', 'GAS',
+                  'GEE', 'GEX', 'GMD', 'GVR', 'HAG', 'HCM', 
+                  'HDB', 'HDC', 'HDG', 'HHV', 'HPG', 'HSG', 
+                  'HT1', 'IMP', 'KBC', 'KDC', 'KDH', 'KOS', 
+                  'LPB', 'MBB', 'MSB', 'MSN', 'MWG', 'NAB', 
+                  'NKG', 'NLG', 'NT2', 'NVL', 'OCB', 'PAN', 
+                  'PC1', 'PDR', 'PHR', 'PLX', 'PNJ', 'POW', 
+                  'PVD', 'PVT', 'REE', 'SAB', 'SBT', 'SCS', 
+                  'SHB', 'SIP', 'SJS', 'SSB', 'SSI', 'STB', 
+                  'SZC', 'TCB', 'TCH', 'TPB', 'VCB', 'VCG', 
+                  'VCI', 'VGC', 'VHC', 'VHM', 'VIB', 'VIC', 
+                  'VIX', 'VJC', 'VND', 'VNM', 'VPB', 'VPI', 
+                  'VPL', 'VRE', 'VSC', 'VTP']
 
 
 # ── Data cleaning ─────────────────────────────────────────────────────────────
@@ -124,7 +130,7 @@ def _fetch_quote(symbol: str, start: str, end: str, source: str) -> pd.DataFrame
 def update_market_data(
     file_path: str,
     symbols: list,
-    start_date: str = "2019-01-01",
+    start_date: str = "2016-01-01",
     batch_size: int = 5,
     base_sleep: float = 3.0,
     sources: list[str] = ("VCI", "KBS"),
@@ -225,15 +231,59 @@ def update_market_data(
         log.info("💾 Final save — %d total rows", len(existing_df))
 
 
+def _drop_before_last_zero_volume(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    For each symbol, finds the latest date where volume == 0, then drops all
+    rows from the beginning up to and including that date.
+    Symbols with no zero-volume rows are left completely untouched.
+
+    Example
+    -------
+    Symbol ACB has zero-volume rows on 2017-03-10 and 2020-06-15.
+    The latest is 2020-06-15, so every ACB row with date <= 2020-06-15 is removed.
+    ACB rows from 2020-06-16 onwards are kept.
+    """
+    if df.empty or "volume" not in df.columns:
+        return df
+
+    # Find the latest zero-volume date per symbol
+    zero_vol = df[df["volume"] == 0].groupby("Symbol")["date"].max().rename("cutoff")
+
+    if zero_vol.empty:
+        return df
+
+    df = df.merge(zero_vol.reset_index(), on="Symbol", how="left")
+
+    # Drop rows where date <= cutoff (NaN cutoff = no zero-volume row → keep all)
+    mask_drop = df["cutoff"].notna() & (df["date"] <= df["cutoff"])
+    dropped = mask_drop.sum()
+
+    if dropped:
+        symbols_affected = df.loc[mask_drop, "Symbol"].nunique()
+        log.info(
+            "🧹 Zero-volume trim: dropped %d rows across %d symbol(s)",
+            dropped, symbols_affected,
+        )
+        for sym, cutoff in zero_vol.items():
+            log.debug("  %s — cutoff date: %s", sym, cutoff.date())
+
+    df = df[~mask_drop].drop(columns=["cutoff"])
+    return df
+
+
 def _merge_and_dedup(existing: pd.DataFrame, new_chunks: list) -> pd.DataFrame:
     """
     Merges existing data with new chunks.
     On (date, Symbol) conflict the new fetch wins (keep='last').
+    After deduplication, rows up to and including the latest zero-volume date
+    are dropped per symbol (see _drop_before_last_zero_volume).
     """
     new_df = pd.concat(new_chunks, ignore_index=True)
     combined = new_df if existing.empty else pd.concat([existing, new_df], ignore_index=True)
     combined = combined.drop_duplicates(subset=["date", "Symbol"], keep="last")
-    combined = combined[combined["date"] >= "2018-01-01"]          # ← add this line
+    combined = combined[combined["date"] >= "2016-01-01"]
+    combined = combined.sort_values(["Symbol", "date"]).reset_index(drop=True)
+    combined = _drop_before_last_zero_volume(combined)
     combined = combined.sort_values(["Symbol", "date"]).reset_index(drop=True)
     return combined
 
@@ -289,7 +339,7 @@ def fetch_indicator_data(
 if __name__ == "__main__":
     MARKET_PATH    = "market_data.parquet"
     VNINDEX_PATH   = "vnindex_data.parquet"
-    START_DATE     = "2018-01-01"
+    START_DATE     = "2016-01-01"
 
     log.info("🤖 Starting data collection…")
 
