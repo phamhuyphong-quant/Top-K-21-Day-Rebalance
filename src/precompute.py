@@ -5,9 +5,11 @@ import pandas as pd
 # Add the project root to the Python path so we can cleanly import from src/
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.features import build_features, target_generating_ranking
-from src.evaluation import generate_and_save_pretrained_model
+from src.features import build_features, target_generating_ranking,seed_everything,build_targets
+from src.evaluation import pretrain_and_save_artifacts
 from src.alpha_mining import WorldQuantAlphas
+from config import final_features
+seed_everything(42)
 def main():
     import random
     import numpy as np
@@ -23,40 +25,19 @@ def main():
         
     print(f"📦 Loading data from {data_path}...")
     df_raw = pd.read_parquet(data_path)
-    
+    df_raw = df_raw[df_raw["close"] > 0].copy()
     # 2. Process features and targets (matching app.py logic exactly)
     print("⚙️ Building features and targets...")
     wq = WorldQuantAlphas(df_raw)
     wq_cols_df = wq.generate_all()
-    df_raw[wq_cols_df.columns] = wq_cols_df.values
+    for col in wq_cols_df.columns:
+        df_raw[col] = wq_cols_df[col]
     df = build_features(df_raw)
+    df = build_targets(df)
     df = target_generating_ranking(df)
     
     # 3. Define the optimized feature list
-    best_features = ['log_ret_1w',
-                 'log_ret_1m', 
-                 'log_ret_3m', 'log_ret_6m', 
-                 'log_ret_1y',
-                 
-                 'volatility_1w',
-                 'volatility_1m',
-                 'volatility_3m',
-                 'volatility_6m',
-                 'volatility_shock_monthly',
-                 'volatility_shock_weekly',
-                 'volume_surge_monthly',
-                 'volume_surge_weekly',
-                 'obv_trend',
-                 'price_vol_divergence',
-                 
-                 'WQ_Alpha_012',
-                 'WQ_Alpha_024', 
-                 'WQ_Alpha_028', 
-                 'WQ_Alpha_053',
-                 'WQ_Alpha_060',
-                 
-                 'dist_52w_high', 
-                 'log_ret_skip1m']
+    best_features = final_features
     
     # Sanity check: Ensure all features were built successfully
     missing_features = [f for f in best_features if f not in df.columns]
@@ -66,7 +47,7 @@ def main():
     # 4. Generate and save the artifacts
     output_dir = os.path.join("data", "pretrained")
     
-    generate_and_save_pretrained_model(
+    pretrain_and_save_artifacts(
         df=df,
         selected_features=best_features,
         use_mega_alpha=False,
