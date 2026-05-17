@@ -110,7 +110,7 @@ def train_mega_combiner(train_df, alpha_cols, epochs=5):
         
     return model
 def walk_forward_cv(df, features, model_params=None, initial_train_months=12, 
-                    test_months=6, gap_days=21, callback:callable|None=None, use_mega=False, use_gp=False):
+                    test_months=6, gap_days=21, use_mega=False, use_gp=False):
     """
     Full walk-forward cross-validation loop.
     Uses eval_set to monitor OOS NDCG at each fold for convergence tracking.
@@ -228,8 +228,6 @@ def walk_forward_cv(df, features, model_params=None, initial_train_months=12,
         print(msg)
 
         oos_predictions.append(test_df)
-        if callback:
-            callback(fold, total_folds, msg)
         # Free memory
         del train_df, X_train, y_train, X_test, y_test
         gc.collect()

@@ -617,7 +617,6 @@ def pretrain_and_save_artifacts(
         initial_train_months=24, 
         test_months=6, 
         gap_days=21,
-        callback=lambda f, t, m: print(f"Fold {f}/{t}: {m}"), # Simple console callback
         use_mega=False,
         use_gp=False
     )
