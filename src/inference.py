@@ -1,17 +1,18 @@
 import pandas as pd
 import xgboost as xgb
 from src import models as md
-
+from src.features import seed_everything
+seed_everything(42)
 def generate_paper_trade_signals(
     df: pd.DataFrame, 
     current_portfolio: list, 
     features: list, 
     use_mega: bool = False, 
-    buy_n: int = 5, 
-    hold_n: int = 15, 
-    trend_filter_col: str = 'dist_SMA_50',
+    model=None,
+    buy_n: int = 10,  
+    trend_filter_col: str = 'dist_SMA_100',
     trend_filter_threshold: float = 1.0,
-    target_col: str = 'target_rank'
+    target_col: str = 'target_quintile'
 ):
     """
     Generates Buy, Hold, and Sell signals mirroring walk-forward logic.
@@ -22,8 +23,7 @@ def generate_paper_trade_signals(
     - current_portfolio: List of stock symbols currently held (e.g., ['VNM', 'FPT']).
     - features: List of feature column names.
     - use_mega: Boolean flag to switch between XGBoost (False) and LSTM (True).
-    - buy_n: Top N stocks targeted for new entries.
-    - hold_n: Grace band; keep holding an existing stock as long as it ranks <= hold_n.
+    - buy_n: Top N stocks targeted for new entries. Also used as the hold threshold — existing positions are kept as long as they rank within the top buy_n.
     - trend_filter_col: Column name for the trend filter (e.g., dist_SMA_50).
     - trend_filter_threshold: Stock must have a trend value > this to be bought.
     - target_col: The column used for training the ranker.
@@ -51,18 +51,23 @@ def generate_paper_trade_signals(
 
     # 3. Model Training & Scoring
     if not use_mega:
-        print(f"Training Baseline XGBoost up to {train_df['date'].max().date()}...")
-        X_train = train_df[features]
-        y_train = train_df[target_col]
-        qid_train = train_df['qid']
-        model = xgb.XGBRanker(**md.base_model())
-        model.fit(X_train, y_train, qid=qid_train)
+        if model is not None:
+            print(f"Using pretrained model for inference on {latest_date.date()}...")
+        else:
+            print(f"Training Baseline XGBoost up to {train_df['date'].max().date()}...")
+            X_train = train_df[features]
+            y_train = train_df[target_col]
+            qid_train = train_df['qid']
+            model = xgb.XGBRanker(**md.base_model())
+            model.fit(X_train, y_train, qid=qid_train)
         
         X_inference = inference_df[features]
         inference_df['live_score'] = model.predict(X_inference)
         
     else:
-        pass
+        raise NotImplementedError(
+        "use_mega=True (LSTM path) is not yet implemented in generate_paper_trade_signals."
+    )
 
     # 4. Rank Today's Stocks
     ranked_today = inference_df.sort_values(by='live_score', ascending=False).copy()
@@ -95,7 +100,7 @@ def generate_paper_trade_signals(
         # out symbols not in current_vn100, but it's good defensive programming.
         if stock_rank is None:
             sell_list.append(sym)
-        elif stock_rank > hold_n:
+        elif stock_rank > buy_n:
             # Fell out of the grace band (e.g., ranked 16th, threshold is 15)
             sell_list.append(sym)
         else:
@@ -123,7 +128,7 @@ def generate_paper_trade_signals(
     print(f"\n--- Paper Trading Signals for {latest_date.date()} ---")
     print(f"Strategy: {'LSTM (Mega)' if use_mega else 'XGBoost (Baseline)'}")
     print(f"SELL ({len(sell_list)}): {sell_list}")
-    print(f"HOLD ({len(hold_list)}): {hold_list} (Grace band <= {hold_n})")
+    print(f"HOLD ({len(hold_list)}): {hold_list}")
     print(f"BUY  ({len(buy_list)}): {buy_list} (Strict top <= {buy_n} + Trend > {trend_filter_threshold})")
     if not_vn100_list:
         print(f"NOT VN100 ({len(not_vn100_list)}): {not_vn100_list} (Held but missing from today's data)")

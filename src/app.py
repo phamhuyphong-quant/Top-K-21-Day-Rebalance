@@ -12,9 +12,9 @@ import plotly.graph_objects as go
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 # Standardized Absolute Imports
-from src.features import build_features, target_generating_ranking
-
-
+from src.features import build_features, target_generating_ranking,build_targets
+from src.alpha_mining import WorldQuantAlphas
+from config import final_features
 from src.inference import generate_paper_trade_signals 
 st.set_page_config(page_title="VN100 Backtest Dashboard", layout="wide")
 
@@ -26,26 +26,69 @@ def _today_vn() -> str:
     Used as a cache-buster so data is always fresh after midnight VN time."""
     return (datetime.datetime.utcnow() + datetime.timedelta(hours=7)).strftime("%Y-%m-%d")
 
-@st.cache_data(ttl=3600)  # Re-checks every hour; date key busts cache after midnight VN time
-def load_data(_date_key: str = None):
+@st.cache_data(ttl=3600)
+def load_data(_date_key: str = None):  
     """
-    Loads market data from GitHub data-storage branch.
-    The _date_key argument is today's VN date — changing it invalidates the cache
-    automatically each new day, so the app always shows the latest data.
+    Fetches raw OHLCV market data from GitHub (or falls back to local file),
+    filters out zero/negative close prices, and enriches with WorldQuant alpha columns.
+
+    Note: build_features(), build_targets(), and target_generating_ranking() are NOT
+    called here — they are applied in the main app body after this function returns.
+
+    Parameters:
+    - _date_key: Cache-busting key (pass today's VN date string). The leading
+                underscore tells Streamlit not to hash this argument.
+
+    Returns:
+    - df: Raw + WQ-enriched DataFrame, ready for build_features().
     """
-    url = "https://raw.githubusercontent.com/Masterokadanori/Cross_Sectional_Rank_VN100/data-storage/market_data.parquet"
-    headers = {"Authorization": f"token {st.secrets['GITHUB_TOKEN']}"}
-    
     try:
+        url = "https://raw.githubusercontent.com/Masterokadanori/Cross_Sectional_Rank_VN100/data-storage/market_data.parquet"
+        headers = {"Authorization": f"token {st.secrets['GITHUB_TOKEN']}"}
         response = requests.get(url, headers=headers)
         if response.status_code == 200:
-            return pd.read_parquet(io.BytesIO(response.content))
+            raw = pd.read_parquet(io.BytesIO(response.content))
         else:
             raise Exception(f"GitHub Error {response.status_code}: {response.text}")
     except Exception as e:
         st.warning(f"⚠️ Live fetch failed. Using local seed data. Error: {e}")
-        return pd.read_parquet("data/market_data.parquet")
+        raw = pd.read_parquet("data/market_data.parquet")
 
+    raw = raw[raw["close"]>0].copy()
+    return raw
+
+@st.cache_resource(ttl=3600)  # cache_resource: keeps the XGBoost model object in memory
+def load_pretrained_model(_date_key: str = None):
+    """
+    Fetches the pretrained XGBoost model from the data-storage branch.
+    Returns an xgb.XGBRanker ready for .predict().
+    Falls back to a local file if the remote fetch fails.
+    """
+    base_url = "https://raw.githubusercontent.com/Masterokadanori/Cross_Sectional_Rank_VN100/data-storage/"
+    headers = {"Authorization": f"token {st.secrets['GITHUB_TOKEN']}"}
+
+    try:
+        model_response = requests.get(base_url + "pretrained_model.json", headers=headers)
+        if model_response.status_code != 200:
+            raise Exception(f"GitHub Error (Model): {model_response.status_code}")
+
+        # XGBoost can load from a file path, so write bytes to a temp file
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+            tmp.write(model_response.content)
+            tmp_path = tmp.name
+
+        model = xgb.XGBRanker()
+        model.load_model(tmp_path)
+        os.unlink(tmp_path)
+        return model
+
+    except Exception as e:
+        st.warning(f"⚠️ Live fetch of pretrained model failed. Using local artifact. Error: {e}")
+        local_path = "data/pretrained/pretrained_model.json"
+        model = xgb.XGBRanker()
+        model.load_model(local_path)
+        return model
 
 @st.cache_data(ttl=3600)  # Same pattern — hourly TTL + date key = daily refresh
 def load_pretrained(_date_key: str = None):
@@ -77,46 +120,7 @@ def load_pretrained(_date_key: str = None):
         result = pd.read_parquet("data/pretrained/pretrained_equity_curve.parquet")
         return honest_test_df, result
 
-def display_portfolio_signals_ui(df, current_portfolio, features):
-    """
-    Streamlit UI component to display Buy/Hold/Sell/Not_VN100 lists beautifully.
-    """
-    st.divider()
-    st.subheader("🎯 Actionable Paper Trading Signals (Today)")
-    
-    with st.spinner("Calculating live market signals..."):
-        try:
-            buys, holds, sells, non_vn100, ranks = generate_paper_trade_signals(
-                df=df,
-                current_portfolio=current_portfolio,
-                features=features
-            )
-            
-            # Create 4 columns for the lists
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                st.success(f"🟢 **BUY** ({len(buys)})")
-                st.write(", ".join(buys) if buys else "None")
-                
-            with col2:
-                st.info(f"🔵 **HOLD** ({len(holds)})")
-                st.write(", ".join(holds) if holds else "None")
-                
-            with col3:
-                st.warning(f"🟠 **SELL** ({len(sells)})")
-                st.write(", ".join(sells) if sells else "None")
-                
-            with col4:
-                st.error(f"🔴 **NOT VN100** ({len(non_vn100)})")
-                st.write(", ".join(non_vn100) if non_vn100 else "None")
-                
-            # Optional: Show the actual dataset of rankings in a dropdown
-            with st.expander("📊 View Full Model Rankings for Today"):
-                st.dataframe(ranks.set_index("rank"), use_container_width=True)
-                
-        except Exception as e:
-            st.error(f"Could not generate signals: {e}")
+  
 # --- INITIALIZE SESSION STATE ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -196,7 +200,7 @@ with st.expander("🧠 How does this system work? (click to expand)", expanded=F
     To simulate real-world deployment and prevent **look-ahead bias**, the model is trained using a
     strict **walk-forward** scheme:
 
-    - **Initial training window:** 12 months of history
+    - **Initial training window:** 24 months of history
     - **Test window:** 6 months (rolled forward after each fold)
     - **Gap:** 21 trading days between train end and test start (prevents any future leakage)
     - **Total folds:** 12 folds covering 2020–2026
@@ -216,41 +220,22 @@ current_portfolio = [sym.strip().upper() for sym in user_portfolio_input.split("
 # 1. Add the Button right under the input
 show_signals_clicked = st.sidebar.button("🎯 Get Today's Signals")
 
-best_features = ['log_ret_1w',
-                 'log_ret_1m', 
-                 'log_ret_3m', 'log_ret_6m', 
-                 'log_ret_1y',
-                 
-                 'volatility_1w',
-                 'volatility_1m',
-                 'volatility_3m',
-                 'volatility_6m',
-                 'volatility_shock_monthly',
-                 'volatility_shock_weekly',
-                 'volume_surge_monthly',
-                 'volume_surge_weekly',
-                 'obv_trend',
-                 'price_vol_divergence',
-                 
-                 'WQ_Alpha_012',
-                 'WQ_Alpha_024', 
-                 'WQ_Alpha_028', 
-                 'WQ_Alpha_053',
-                 'WQ_Alpha_060',
-                 
-                 'dist_52w_high', 
-                 'log_ret_skip1m']
+best_features = final_features
 
-df = load_data(_date_key=_today_vn())
-df = df[df["close"] > 0].copy()
-df = build_features(df)
+df_raw = load_data(_date_key=_today_vn())
+wq = WorldQuantAlphas(df_raw)
+wq_cols_df = wq.generate_all()
+for col in wq_cols_df.columns:
+    df_raw[col] = wq_cols_df[col]
+df = build_features(df_raw)
+df = build_targets(df)
 df = target_generating_ranking(df)
+
+# Load pretrained model once at startup (cached; no retraining)
+pretrained_model = load_pretrained_model(_date_key=_today_vn())
 
 # 2. If the button is clicked, generate and display right below it in the sidebar
 if show_signals_clicked:
-    # Ensure you are importing the base function directly
-    
-    
     with st.sidebar:
         st.divider()
         with st.spinner("Calculating signals..."):
@@ -259,6 +244,7 @@ if show_signals_clicked:
                     df=df,
                     current_portfolio=current_portfolio,
                     features=best_features,
+                    model=pretrained_model,          # ← use preloaded model, no retraining
                     trend_filter_col='dist_SMA_100',
                     target_col='target_quintile'
                 )
@@ -328,6 +314,71 @@ had to navigate with no foreknowledge. The ROI shown is purely from the model's 
 no shorting. Transaction costs are fully modelled: 0.1% brokerage fee + 0.1% securities transfer tax
 + VND 300/share custody fee on each sell, plus T+2 settlement delay on proceeds.
 """)
+
+# --- SECTION 1.5: PER-FOLD MODEL METRICS ---
+st.divider()
+st.subheader("📋 Walk-Forward Fold Metrics (NDCG per Fold)")
+st.markdown("""
+This table shows the model's **NDCG score on each out-of-sample fold**, confirming
+the rankings are consistent across time and the model is not overfitting to any
+single market regime. All scores are computed on data the model never saw during training.
+""")
+
+from sklearn.metrics import ndcg_score as _ndcg
+import numpy as np
+
+# Assign fold numbers by 6-month windows matching walk_forward_cv logic
+honest_test_df['date'] = pd.to_datetime(honest_test_df['date'])
+fold_start = honest_test_df['date'].min()
+fold_records = []
+
+fold_num = 1
+temp_df = honest_test_df.copy()
+temp_df = temp_df.sort_values('date')
+
+fold_end = fold_start + pd.DateOffset(months=6)
+max_date = temp_df['date'].max()
+
+while fold_start <= max_date:
+    fold_df = temp_df[(temp_df['date'] >= fold_start) & (temp_df['date'] < fold_end)]
+    if not fold_df.empty and 'pred_score' in fold_df.columns:
+        daily_ndcg = []
+        for d, grp in fold_df.groupby('date'):
+            if len(grp) > 1:
+                score = _ndcg(
+                    [grp['target_quintile'].values],
+                    [grp['pred_score'].values]
+                )
+                daily_ndcg.append(score)
+        if daily_ndcg:
+            fold_records.append({
+                'Fold': fold_num,
+                'Period': f"{fold_start.strftime('%Y-%m')} → {fold_end.strftime('%Y-%m')}",
+                'Avg NDCG': round(np.mean(daily_ndcg), 4),
+                'Min NDCG': round(np.min(daily_ndcg), 4),
+                'Max NDCG': round(np.max(daily_ndcg), 4),
+                'Trading Days': len(daily_ndcg),
+            })
+    fold_start = fold_end
+    fold_end = fold_start + pd.DateOffset(months=6)
+    fold_num += 1
+
+if fold_records:
+    fold_metrics_df = pd.DataFrame(fold_records).set_index('Fold')
+    
+    # Colour-code the Avg NDCG column: green if > 0.80, yellow otherwise
+    def colour_ndcg(val):
+        colour = '#2ca02c' if val >= 0.80 else '#ff7f0e'
+        return f'color: {colour}; font-weight: bold'
+    
+    st.dataframe(
+        fold_metrics_df.style.applymap(colour_ndcg, subset=['Avg NDCG']),
+        use_container_width=True
+    )
+    
+    overall_ndcg = fold_metrics_df['Avg NDCG'].mean()
+    st.metric("Overall Mean NDCG (all folds)", f"{overall_ndcg:.4f}",
+              help="NDCG > 0.80 across all folds confirms the model ranks stocks reliably OOS.")
 
 # --- SECTION 2: FEATURE DIAGNOSTICS ---
 st.divider()
@@ -420,7 +471,6 @@ with st.spinner("Computing feature influence and ranking diagnostics..."):
         )
         st.plotly_chart(fig_q, use_container_width=True)
     else:
-        # Compute pred_quintile from pred_score if not already present
         honest_test_df['pred_quintile'] = honest_test_df.groupby('date')['pred_score'].transform(
     lambda x: pd.qcut(x.rank(method='first'), 5, labels=[1,2,3,4,5])
 )

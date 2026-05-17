@@ -79,19 +79,20 @@
             mkdir -p /tmp/pretrained_artifacts
             kaggle kernels output ${{ secrets.KAGGLE_USERNAME }}/precompute-vn100 -p /tmp/pretrained_artifacts/
 
-        - name: Checkout data-storage branch
+        - name: Checkout data_storage branch
           uses: actions/checkout@v4
           with:
             ref: data-storage
             clean: true
 
-        - name: Commit and push artifacts to data-storage
+        - name: Commit and push artifacts to data_storage/feature
           run: |
             cp /tmp/pretrained_artifacts/pretrained_predictions.parquet .
             cp /tmp/pretrained_artifacts/pretrained_equity_curve.parquet .
+            cp /tmp/pretrained_artifacts/pretrained_model.json .
 
             git config --local user.email "github-actions[bot]@users.noreply.github.com"
             git config --local user.name "github-actions[bot]"
-            git add pretrained_predictions.parquet pretrained_equity_curve.parquet
+            git add pretrained_predictions.parquet pretrained_equity_curve.parquet pretrained_model.json
             git commit -m "data: automated precompute update $(date)" || echo "No changes to commit"
             git push origin data-storage
