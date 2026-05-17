@@ -47,4 +47,5 @@ pretrain_and_save_artifacts(
 # ── 5. Copy outputs to /kaggle/working so GitHub Actions can download them ────
 os.system("cp /kaggle/working/repo/data/pretrained/pretrained_predictions.parquet /kaggle/working/")
 os.system("cp /kaggle/working/repo/data/pretrained/pretrained_equity_curve.parquet /kaggle/working/")
+os.system("cp /kaggle/working/repo/data/pretrained/pretrained_model.json /kaggle/working/")
 print("✅ Done!")
