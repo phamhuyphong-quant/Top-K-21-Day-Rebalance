@@ -410,7 +410,7 @@ Returns an alternative hyperparameter set with `lambdarank_pair_method='topk'` a
 
 ---
 
-#### `walk_forward_cv(df, features, model_params=None, initial_train_months=12, test_months=6, gap_days=21, callback=None, use_mega=False, use_gp=False) → DataFrame`
+#### `walk_forward_cv(df, features, model_params=None, initial_train_months=12, test_months=6, gap_days=21, use_mega=False, use_gp=False) → DataFrame`
 
 The core training and evaluation function. Simulates live deployment by rolling through time:
 
@@ -427,7 +427,6 @@ At each fold, the model is fitted on the training slice and predictions are stor
 | `initial_train_months` | `12` | Months of data required before first test fold. **The notebooks and all published results use `24` — always pass this explicitly.** |
 | `test_months` | `6` | Length of each test window |
 | `gap_days` | `21` | Trading day gap between train end and test start |
-| `callback` | `None` | Optional `fn(fold, total_folds, message)` for UI progress updates |
 | `use_mega` | `False` | Enable LSTM sequence combiner (experimental, unstable OOS) |
 | `use_gp` | `False` | Enable GP alpha mining per fold (experimental) |
 
