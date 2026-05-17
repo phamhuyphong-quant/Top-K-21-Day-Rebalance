@@ -2,14 +2,36 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import os
 import sys
+import xgboost as xgb
+import numpy as np
+from scipy.stats import spearmanr
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from src.features import seed_everything
+from src.models import base_model
+seed_everything(42)
 from src.models import walk_forward_cv
-def feature_influence(model, features):
+def plot_feature_importances(model, features):
     importances = pd.Series(model.feature_importances_, index=features).sort_values()
     importances.plot(kind='barh', title='What drives the ranking?')
     plt.show()
 
-def evaluate_ranking_performance(test_df, X_test=None, ranker=None, top_quantile=0.2, ret_col='next_1m_ret'):
+def compute_model_ic(test_df, pred_col='pred_score', ret_col='next_1m_ret'):
+    daily_ic = test_df.groupby('date').apply(
+        lambda x: spearmanr(x[pred_col], x[ret_col]).statistic,
+        include_groups=False
+    )
+
+    ic_mean = daily_ic.mean()
+    ic_std  = daily_ic.std()
+    ic_ir   = ic_mean / ic_std if ic_std > 0 else 0
+
+    print(f"IC Mean : {ic_mean:.4f}   (target: > 0.05)")
+    print(f"IC Std  : {ic_std:.4f}")
+    print(f"IC IR   : {ic_ir:.4f}   (target: > 0.5)")
+
+    return {'ic_mean': ic_mean, 'ic_std': ic_std, 'ic_ir': ic_ir, 'daily_ic': daily_ic}
+
+def compute_top_quantile_win_rate(test_df, X_test=None, ranker=None, top_quantile=0.2, ret_col='next_1m_ret'):
     """
     Evaluates the ranker. Supports two modes:
     1. Static mode: pass X_test and ranker to score predictions on the fly.
@@ -50,7 +72,7 @@ def evaluate_ranking_performance(test_df, X_test=None, ranker=None, top_quantile
         'top_picks_df': top_picks
     }
 
-def feature_influence_ic(test_df, features, target_col='next_1m_ret'):
+def plot_feature_ic(test_df, features, target_col='next_1m_ret'):
     """
     Evaluates feature predictive power via Information Coefficient (IC).
     Computes Spearman rank correlation between each feature and the forward return target.
@@ -74,18 +96,19 @@ def feature_influence_ic(test_df, features, target_col='next_1m_ret'):
     plt.grid(axis='x', linestyle='--', alpha=0.7)
     plt.tight_layout()
     plt.show()
-    """
-    Calculates IC Mean, IC Std, and IC IR for each feature.
-    IC IR = Mean(Daily IC) / Std(Daily IC)
-    """
+def plot_feature_ir(test_df,features,target_col='next_1m_ret'):
+    #Calculates IC Mean, IC Std, and IC IR for each feature.
+    #IC IR = Mean(Daily IC) / Std(Daily IC)
+
     ic_ir_results = {}
 
     for feat in features:
         # 1. Calculate IC for each date (Time-series of ICs)
         # We group by 'date' and correlate the feature with the target for that specific day
         daily_ic = test_df.groupby('date').apply(
-            lambda x: x[feat].corr(x[target_col], method='spearman')
-        )
+    lambda x: x[feat].corr(x[target_col], method='spearman'),
+    include_groups=False
+)
         
         # 2. Calculate Metrics
         ic_mean = daily_ic.mean()
@@ -116,11 +139,12 @@ def feature_influence_ic(test_df, features, target_col='next_1m_ret'):
     
     return ir_df
 
-def plot_rolling_ic_ir(test_df, feature, target_col='next_1m_ret', window=6):
+def plot_feature_rolling_ir(test_df, feature, target_col='next_1m_ret', window=6):
     # Calculate monthly ICs
     monthly_ic = test_df.groupby(test_df['date'].dt.to_period('M')).apply(
-        lambda x: x[feature].corr(x[target_col], method='spearman')
-    )
+    lambda x: x[feature].corr(x[target_col], method='spearman'),
+    include_groups=False
+)
     
     # Calculate rolling IR
     rolling_ir = monthly_ic.rolling(window=window).mean() / monthly_ic.rolling(window=window).std()
@@ -128,7 +152,7 @@ def plot_rolling_ic_ir(test_df, feature, target_col='next_1m_ret', window=6):
     rolling_ir.plot(title=f'Rolling {window}-Month IC IR for {feature}')
     plt.axhline(0, color='black', linestyle='--')
     plt.show()
-def predicted_quintile_chart(test_df, X_test=None, ranker=None):
+def plot_return_by_predicted_quintile(test_df, X_test=None, ranker=None):
     """
     Plots average forward return by predicted quintile.
     Supports both static mode (pass ranker) and dynamic mode (read pred_score from test_df).
@@ -161,39 +185,37 @@ def predicted_quintile_chart(test_df, X_test=None, ranker=None):
     plt.show()
 
 
-def capital_over_time(result):
-    # 1. Ensure the 'date' column is in datetime format for proper x-axis scaling
-    result['date'] = pd.to_datetime(result['date'])
-
-    # 2. Set up the figure size (width, height in inches)
+def plot_equity_curves(*results, labels=None, normalize=False):
     plt.figure(figsize=(12, 6))
 
-    # 3. Plot the data
-    # marker='o' adds dots to each data point so you can see exactly where the months align
-    plt.plot(result['date'], result['total_value'], marker='o', linestyle='-', color='#1f77b4', linewidth=2, label='Portfolio Total Value')
+    for i, result in enumerate(results):
+        result = result.copy()
+        result['date'] = pd.to_datetime(result['date'])
+        label = labels[i] if labels and i < len(labels) else f'Strategy {i+1}'
 
-    # 4. Add titles and labels
-    plt.title('Backtest Equity Curve: Total Value Over Time', fontsize=14, fontweight='bold')
+        y = result['total_value']
+        if normalize:
+            y = (y / y.iloc[0] - 1) * 100
+
+        plt.plot(result['date'], y, marker='o', linewidth=2, label=label)
+
+    plt.title('Equity Curve', fontsize=14, fontweight='bold')
     plt.xlabel('Date', fontsize=12)
-    plt.ylabel('Total Value (Million VND)', fontsize=12)
-
-    # 5. Format the chart for readability
-    plt.xticks(rotation=45)                  # Angle the dates so they don't overlap
-    plt.grid(True, linestyle='--', alpha=0.6) # Add a subtle background grid
-    plt.legend(loc='upper left')             # Add a legend
-
-    # 6. Adjust layout and display
-    plt.tight_layout() # Ensures date labels at the bottom aren't cut off
+    plt.ylabel('Cumulative Return (%)' if normalize else 'Total Value (VND)', fontsize=12)
+    plt.xticks(rotation=45)
+    plt.grid(True, linestyle='--', alpha=0.6)
+    plt.legend(loc='upper left')
+    plt.tight_layout()
     plt.show()
 
-
-def compute_metrics(result, initial_capital=None, rf_annual=0.045):
+    
+def print_performance_report(result, initial_capital=None, rf_annual=0.045):
     """
     Computes and prints risk-adjusted performance metrics from a backtest result DataFrame.
     
     Parameters
     ----------
-    result          : DataFrame returned by run_xgboost_backtest (columns: date, total_value)
+    result          : DataFrame returned by simulate_portfolio (columns: date, total_value)
     initial_capital : Starting capital. If None, uses result['total_value'].iloc[0]
     rf_annual       : Annual risk-free rate. Default 4.5% (approx Vietnam T-bill rate)
     """
@@ -269,18 +291,19 @@ def compute_metrics(result, initial_capital=None, rf_annual=0.045):
     }
 
 
-def run_xgboost_backtest(
+def simulate_portfolio(
     df,
     model,
     features,
     initial_capital=10000,
     buy_fraction=0.05,
-    hold_fraction=0.15,
-    trailing_stop=-0.10,
-    take_profit=0.50,
     time_of_rebalance='M',
-    trend_filter_col='dist_SMA_50',
+    trend_filter_col='dist_SMA_100',
     settlement_delay=3,
+    vnindex_df=None,
+    vol_lookback=21,          # days for realized vol calculation
+    vol_percentile=0.80,      # percentile threshold — above this = high vol = skip
+    vol_window=252,
 ):
     """
     Simulates a portfolio with the correct VN-market timing:
@@ -314,13 +337,32 @@ def run_xgboost_backtest(
                        Pass None to disable.
     settlement_delay : trading days between sell and cash availability (default 3, VN T+2.5)
     """
-    import numpy as np
 
     df = df.copy()
     df['date'] = pd.to_datetime(df['date'])
     df['year_time'] = df['date'].dt.to_period(time_of_rebalance)
     rebalance_dates = sorted(df.groupby('year_time')['date'].min().unique())
-
+     # --- VNINDEX VOLATILITY REGIME FILTER ---
+    # regime_ok[date] = True  → normal market, proceed with rebalance
+    # regime_ok[date] = False → high vol, skip rebalance and stay in cash
+    regime_ok = {}
+    if vnindex_df is not None:
+        vn = vnindex_df.copy()
+        vn['date'] = pd.to_datetime(vn['date'])
+        vn = vn.sort_values('date').set_index('date')
+        vn['daily_ret'] = vn['close'].pct_change()
+        vn['vol_21d']   = vn['daily_ret'].rolling(vol_lookback).std() * (252 ** 0.5)
+        vn['vol_p']     = vn['vol_21d'].rolling(vol_window).quantile(vol_percentile)
+        vn['is_normal'] = vn['vol_21d'] <= vn['vol_p']
+        # forward-fill so every rebalance date has a value
+        vn = vn.reindex(
+            pd.date_range(vn.index.min(), vn.index.max(), freq='D'),
+            method='ffill'
+        )
+        for d in rebalance_dates:
+            ts = pd.Timestamp(d)
+            regime_ok[ts] = bool(vn['is_normal'].get(ts, True))
+    # if vnindex_df is None, all dates are treated as normal
     # Trading calendar — used to find the exact settlement date in trading days
     trading_days = np.sort(df['date'].unique())
 
@@ -353,7 +395,26 @@ def run_xgboost_backtest(
 
     for date in rebalance_dates:
         date = pd.Timestamp(date)
-
+        day_df_preview = df[df['date'] == date]
+        n_buy = max(1, int(len(day_df_preview) * buy_fraction))
+        # --- REGIME CHECK — skip rebalance on high-vol months ---
+        if not regime_ok.get(date, True):
+            # Still record NAV so the equity curve has no gaps
+            nav = cash
+            nav += sum(e['amount'] for e in pending_cash)
+            day_prices = df[df['date'] == date].set_index('Symbol')['close'].to_dict()
+            for sym, pos_data in portfolio.items():
+                if sym in day_prices:
+                    nav += pos_data['shares'] * day_prices[sym]
+            history.append({
+                'date':               date,
+                'total_value':        nav,
+                'cash':               cash,
+                'pending_cash':       sum(e['amount'] for e in pending_cash),
+                'number_of_holdings': len(portfolio),
+            })
+            print(f"  [REGIME FILTER] {date.strftime('%Y-%m')} — high vol, skipping rebalance")
+            continue   # skip everything below — no sells, no buys
         # ------------------------------------------------------------------
         # 0. Execute any deferred buys whose settlement date has arrived
         # ------------------------------------------------------------------
@@ -372,9 +433,10 @@ def run_xgboost_backtest(
                 settlement_prices = settlement_day_df.set_index('Symbol')['close'].to_dict()
                 fallback_prices   = order['prices']
 
-                n = len(targets)
+                n_total_targets = n_buy   # the full intended portfolio size
+                n = len(targets)          # just the new names to actually buy
                 if n > 0 and cash > 0:
-                    cash_per_stock = cash / n
+                    cash_per_stock = cash / n_total_targets 
 
                     for sym in targets:
                         price = settlement_prices.get(sym) or fallback_prices.get(sym)
@@ -433,11 +495,9 @@ def run_xgboost_backtest(
 
         day_df = day_df.sort_values(by='pred_score', ascending=False)
 
-        n_buy  = max(1, int(len(day_df) * buy_fraction))
-        n_hold = max(1, int(len(day_df) * hold_fraction))
 
         target_buy_stocks  = day_df.head(n_buy)['Symbol'].tolist()
-        target_hold_stocks = day_df.head(n_hold)['Symbol'].tolist()
+        
 
         # Update peak prices for trailing stop
         for sym in portfolio:
@@ -457,11 +517,7 @@ def run_xgboost_backtest(
             return_since_buy   = (current_price - pos_data['buy_price']) / pos_data['buy_price']
             drawdown_from_peak = (current_price - pos_data['highest_price']) / pos_data['highest_price']
 
-            if sym not in target_hold_stocks:
-                symbols_to_sell.append(sym)
-            elif drawdown_from_peak <= trailing_stop:
-                symbols_to_sell.append(sym)
-            elif return_since_buy >= take_profit:
+            if sym not in target_buy_stocks:        # hard: not in buy targets → sell
                 symbols_to_sell.append(sym)
 
         # Execute sells — proceeds enter pending_cash, available after T+settlement_delay
@@ -524,28 +580,30 @@ def run_xgboost_backtest(
 
     return pd.DataFrame(history)
 
-def plot_model_comparison(res_base, res_lstm):
-    plt.figure(figsize=(12, 6))
-    
-    # Normalise to cumulative % return for easy comparison
-    base_return = (res_base['total_value'] / res_base['total_value'].iloc[0] - 1) * 100
-    lstm_return = (res_lstm['total_value'] / res_lstm['total_value'].iloc[0] - 1) * 100
-    
-    plt.plot(res_base['date'], base_return, label='Baseline XGBoost (Stable)', color='#1f77b4', linewidth=2)
-    plt.plot(res_lstm['date'], lstm_return, label='Advanced LSTM (Unstable)', color='#d62728', linestyle='--', linewidth=2)
-    
-    plt.title('Equity Curve Comparison: Baseline vs. LSTM', fontsize=14, fontweight='bold')
-    plt.xlabel('Date')
-    plt.ylabel('Cumulative Return (%)')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.show()
 
-def generate_and_save_pretrained_model(df, selected_features, use_mega_alpha=False, output_dir="data/pretrained/"):
+def pretrain_and_save_artifacts(
+    df: pd.DataFrame,
+    selected_features: list,
+    use_mega_alpha: bool = False,
+    output_dir: str = "data/pretrained/",
+    vnindex_df: pd.DataFrame | None = None,
+) -> tuple[str, str, str]:
+   
     """
-    Runs the heavy walk-forward CV and backtest once, saving the artifacts 
-    so the Streamlit app can load them instantly.
+    Runs the full walk-forward CV and backtest once, then saves all artifacts to disk
+    so the Streamlit app can load them instantly without retraining.
+
+    Parameters:
+    - df: Fully processed DataFrame (features + targets + qid must already exist).
+    - selected_features: List of feature column names to train on.
+    - use_mega_alpha: Reserved for future LSTM-based mega-alpha pipeline (currently unused).
+    - output_dir: Directory where artifacts are saved.
+    - vnindex_df: Reserved for future market-relative metrics (currently unused).
+
+    Returns:
+    - predictions_path: Path to pretrained_predictions.parquet
+    - equity_curve_path: Path to pretrained_equity_curve.parquet
+    - final_model_path: Path to pretrained_model.json
     """
     print("🚀 Starting Pre-training Walk-Forward CV...")
     
@@ -566,28 +624,35 @@ def generate_and_save_pretrained_model(df, selected_features, use_mega_alpha=Fal
     
     # 2. Run the Backtest logic to get the Equity Curve
     print("📈 Running Backtest on OOS results...")
-    result = run_xgboost_backtest(
-        honest_test_df, 
+    result = simulate_portfolio(
+        df=honest_test_df, 
         model=None, 
         features=None,
-        initial_capital=10000,
-        buy_fraction=0.05,
-        hold_fraction=0.15,
+        initial_capital=100000,
+        buy_fraction=0.10,
+
         time_of_rebalance='M', 
         trend_filter_col='dist_SMA_100'
     )
-    
+    final_model = xgb.XGBRanker(**base_model())
+    x_train = df[selected_features]
+    y_train=df['target_quintile']
+    qids_train =df['qid']
+    final_model.fit(
+            x_train, y_train, qid=qids_train, 
+            verbose=False
+        )
     # 3. Save the critical artifacts to Parquet (much faster than CSV)
     predictions_path = os.path.join(output_dir, "pretrained_predictions.parquet")
     equity_curve_path = os.path.join(output_dir, "pretrained_equity_curve.parquet")
-    
+    final_model_path = os.path.join(output_dir,"pretrained_model.json")
     # We only need to save the columns app.py actually uses to save space!
-    cols_to_save = ['date', 'Symbol', 'next_1m_ret', 'pred_score', 'pred_quintile'] + selected_features
+    #cols_to_save = ['date', 'Symbol', 'next_1m_ret', 'pred_score', 'pred_quintile'] + selected_features
     # Ensure we only try to save columns that actually exist in the dataframe
-    cols_to_save = [c for c in cols_to_save if c in honest_test_df.columns]
+    #cols_to_save = [c for c in cols_to_save if c in honest_test_df.columns]
     
-    honest_test_df[cols_to_save].to_parquet(predictions_path, index=False)
-    result[['date', 'total_value']].to_parquet(equity_curve_path, index=False)
-    
+    honest_test_df.to_parquet(predictions_path, index=False)
+    result.to_parquet(equity_curve_path, index=False)
+    final_model.save_model(final_model_path)
     print(f"✅ Success! Artifacts saved to {output_dir}")
-    return predictions_path, equity_curve_path
+    return predictions_path, equity_curve_path,final_model_path

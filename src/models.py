@@ -11,8 +11,8 @@ import torch.optim as optim
 
 from src.alpha_mining import WorldQuantAlphas
 from src.deep_combiner import DynamicAlphaCombiner
-from src.features import build_features
-
+from src.features import seed_everything
+seed_everything(42)
 def test_train_spliter(df, test_start, features):
     df = df.copy()
     
@@ -69,20 +69,23 @@ def base_model():
 
 
     }
-def alpha_model():
+def testing_model():
     return {
-        'tree_method': 'hist',  # GPU-accelerated histogram method
-        'device':'cuda',
-        'predictor': 'gpu_predictor',
-        'objective': 'rank:ndcg', 
-        'n_estimators': 150,
-        'learning_rate': 0.05,
+        'tree_method': 'hist',
+        'objective': 'rank:ndcg',
+
+        'n_estimators': 100,
+        'learning_rate': 0.1,
         'max_depth': 4,
-        'colsample_bytree': 0.5,    
+
+        'colsample_bytree': 0.7,
         'subsample': 0.8,
-        'reg_alpha': 1.0,
-        'reg_lambda': 5.0,
-        'random_state': 42
+
+        # Add ONLY this — most impactful, lowest risk
+        'lambdarank_pair_method': 'topk',
+        'lambdarank_num_pair_per_sample': 10,
+
+        'random_state': 42,
     }
 def train_mega_combiner(train_df, alpha_cols, epochs=5):
     """
@@ -107,7 +110,7 @@ def train_mega_combiner(train_df, alpha_cols, epochs=5):
         
     return model
 def walk_forward_cv(df, features, model_params=None, initial_train_months=12, 
-                    test_months=6, gap_days=21, callback=None, use_mega=False, use_gp=False):
+                    test_months=6, gap_days=21, callback:callable|None=None, use_mega=False, use_gp=False):
     """
     Full walk-forward cross-validation loop.
     Uses eval_set to monitor OOS NDCG at each fold for convergence tracking.
@@ -145,7 +148,8 @@ def walk_forward_cv(df, features, model_params=None, initial_train_months=12,
         
         train_df = df.loc[df['date'] <= train_cutoff].copy()
         test_df = df[(df['date'] >= test_start) & (df['date'] < test_end)].copy()
-        
+        train_df['qid'] = train_df.groupby('date').ngroup()
+        test_df['qid'] = test_df.groupby('date').ngroup()
         if test_df.empty: break
             
         current_features = list(features)
