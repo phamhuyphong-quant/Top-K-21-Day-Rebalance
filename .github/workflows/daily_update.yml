@@ -12,7 +12,7 @@ jobs:
       contents: write
 
     steps:
-      - name: 📥 Checkout data-storage branch
+      - name: 📥 Checkout data_storage branch
         uses: actions/checkout@v4
         with:
           ref: data-storage
@@ -38,6 +38,6 @@ jobs:
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add market_data.parquet
+          git add market_data.parquet vnindex_data.parquet
           git diff --cached --quiet && echo "No changes" || git commit -m "data: automated market update $(date +'%Y-%m-%d')"
           git push origin data-storage
