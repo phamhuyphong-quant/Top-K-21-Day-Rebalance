@@ -15,13 +15,14 @@ This document describes each module in `src/`, what it does, and how to use it. 
 7. [inference.py](#inferencepy)
 8. [deep_combiner.py](#deep_combinerpy)
 9. [app.py](#apppy)
-10. [Data Flow Summary](#data-flow-summary)
+10. [config.py](#configpy)
+11. [Data Flow Summary](#data-flow-summary)
 
 ---
 
 ## `data_collect.py`
 
-**Purpose:** Constructs the VN100 investable universe and fetches/updates OHLCV market data from the VCI source via `vnstock`.
+**Purpose:** Constructs the VN100 investable universe and fetches/updates OHLCV market data. Supports multiple data sources (`VCI`, `KBS`) with automatic fallback, OHLC sanity cleaning, incremental merging, and logging.
 
 ### Functions
 
@@ -38,34 +39,66 @@ Sanitises a raw list of ticker symbols by stripping whitespace, removing NaN val
 
 ---
 
-#### `build_vn100() → list[str]`
+#### `build_vn100(fetching=False) → list[str]`
 
-Constructs the VN100 universe by combining the VN30 and VNMidCap indices from the VCI data source. Prints component counts to stdout.
+Returns the VN100 universe.
+
+- If `fetching=False` (default): returns a **hardcoded static list** of 100 tickers — fast and offline-safe, used by default in most workflows.
+- If `fetching=True`: queries the KBS data source live via `vnstock` to combine VN30 + VNMidCap dynamically.
 
 **Returns:** Sorted list of ~100 ticker symbols forming the VN100 universe.
 
 **Example:**
 ```python
 from src.data_collect import build_vn100
+
+# Fast path — use hardcoded list (default)
 symbols = build_vn100()
-# VN30: 30 | VNMID: 70 | VN100: 97
+
+# Live path — query KBS for current index constituents
+symbols = build_vn100(fetching=True)
+# Logs: VN30=30  VNMID=70  VN100=97
 ```
 
 ---
 
-#### `update_market_data(file_path, symbols, start_date, batch_size) → None`
+#### `clean_ohlcv(df) → DataFrame`
 
-Fetches daily OHLCV history for all symbols and saves to a Parquet file. Performs **incremental updates**: reads the existing file (if any), identifies the last date for each symbol, and only downloads new data — skipping symbols that are already up to date.
+Applies OHLCV sanity rules on a per-row basis. Detects any OHLC violation (e.g. `high < low`, non-positive prices) and forward-fills all four OHLC columns for that row from the previous valid row. Volume is never modified. No rows are dropped.
+
+---
+
+#### `update_market_data(file_path, symbols, start_date, batch_size, base_sleep, sources, filter_symbols) → None`
+
+Fetches full OHLCV history from `start_date` to today for every symbol and saves to a Parquet file. Tries each source in order; falls back to the next source on timeout, rate-limit, or any other error.
+
+Existing data is preserved — freshly fetched rows overwrite on `(date, Symbol)` conflict. Saves incrementally every `batch_size` symbols so progress is not lost mid-run.
 
 **Parameters:**
 - `file_path` (`str`) — Path to the output `.parquet` file (e.g., `"data/market_data.parquet"`)
 - `symbols` (`list[str]`) — List of ticker symbols to fetch
-- `start_date` (`str`, default `"2018-01-01"`) — Earliest date for initial fetch; ignored for symbols already in the file
-- `batch_size` (`int`, default `5`) — Number of symbols fetched per batch before a brief sleep, to respect API rate limits
+- `start_date` (`str`, default `"2016-01-01"`) — Earliest date for initial data fetch
+- `batch_size` (`int`, default `5`) — Number of symbols fetched per batch before a batch save
+- `base_sleep` (`float`, default `3.0`) — Seconds to sleep between each symbol request (rate-limit courtesy)
+- `sources` (`list[str]`, default `("VCI", "KBS")`) — Data sources to try in order; falls back to next on failure
+- `filter_symbols` (`bool`, default `True`) — If `True`, purges rows whose `Symbol` is no longer in the provided list when loading the existing file
 
 **Notes:**
-- Automatically handles weekends: if run on Monday, sets `latest_market_day` to last Friday.
-- Data is written in Parquet format using PyArrow for fast I/O.
+- Rate-limit errors with an explicit wait time (e.g. `"30 giây"`) are detected via regex; the same source is retried once after the wait before falling back.
+- All data is written in Parquet format using PyArrow for fast I/O.
+- All activity is logged to `data_collect.log` and stdout.
+
+---
+
+#### `fetch_indicator_data(ind_symbol, start_date, file_path, sources) → None`
+
+Fetches market index data (e.g. `"VNINDEX"`) and saves to a Parquet file. Tries each source in order; falls back on any error.
+
+**Parameters:**
+- `ind_symbol` (`str`) — Index symbol (e.g. `"VNINDEX"`)
+- `start_date` (`str`) — Earliest date to fetch
+- `file_path` (`str`) — Output path for the Parquet file
+- `sources` (`list[str]`, default `("VCI", "KBS")`) — Data sources to try in order
 
 ---
 
@@ -73,7 +106,15 @@ Fetches daily OHLCV history for all symbols and saves to a Parquet file. Perform
 
 **Purpose:** Transforms raw OHLCV data into the full feature matrix used for model training. Also generates the ranking target variable.
 
+> **Important:** All feature columns are shifted by 1 day inside `build_features()` before returning, so every feature reflects data known at close of the *previous* trading day. This prevents any same-day look-ahead during training or inference.
+
 ### Functions
+
+---
+
+#### `seed_everything(seed=42) → None`
+
+Sets random seeds for `random`, `numpy`, and `torch` (including CUDA) to ensure reproducibility across all modules. Called at import time throughout `src/`.
 
 ---
 
@@ -100,7 +141,7 @@ Computes rolling volume averages and surge ratios to capture abnormal trading ac
 
 #### `return_ln(df) → DataFrame`
 
-Computes multi-horizon log returns using a 1-day lag (i.e., all returns are computed relative to yesterday's close to avoid same-day look-ahead).
+Computes multi-horizon log returns. Note: returns are computed relative to the *current* close (no extra lag here); the 1-day lag applied in `build_features()` ensures look-ahead safety.
 
 **Adds columns:** `log_ret_1w`, `log_ret_1m`, `log_ret_3m`, `log_ret_6m`, `log_ret_1y`
 
@@ -108,7 +149,7 @@ Computes multi-horizon log returns using a 1-day lag (i.e., all returns are comp
 
 #### `volatility(df) → DataFrame`
 
-Computes rolling annualised volatility at multiple horizons and volatility shock ratios (recent vol / longer-term vol).
+Computes rolling annualised volatility at multiple horizons and volatility shock ratios (recent vol / longer-term vol). Uses a temporary `log_ret_daily` column that is dropped before returning.
 
 **Adds columns:**
 - `volatility_1w`, `volatility_1m`, `volatility_3m`, `volatility_6m` — Annualised rolling std (multiplied by √252)
@@ -151,16 +192,24 @@ Computes two derived volume features that go beyond raw surge ratios.
 
 ---
 
-#### `build_features(df) → DataFrame`
+#### `build_features(df, min_stocks_per_date=50) → DataFrame`
 
-Master pipeline that calls all feature functions in the correct order: `return_ln → volatility → MA → volume → rsi → volume_quality → price_structure`. Also appends the forward-return labels used during evaluation:
+Master pipeline that calls all feature functions in the correct order: `return_ln → volatility → MA → volume → rsi → volume_quality → price_structure`.
+
+After computing all features, **every feature column is shifted forward by 1 day per symbol** using a grouped shift, preventing same-day look-ahead. Rows with any `inf` or `NaN` in feature columns are then dropped. Dates where fewer than `min_stocks_per_date` symbols survive are also removed (logged as a warning).
+
+**Returns:** Cleaned DataFrame with all features. Note that forward-return targets (`next_1m_ret`, `next_1w_ret`) are **not** added here — call `build_targets()` separately.
+
+---
+
+#### `build_targets(df) → DataFrame`
+
+Adds the forward-return target columns used during evaluation:
 
 - `next_1m_ret` — Log return over the next 21 trading days (the main target)
 - `next_1w_ret` — Log return over the next 5 trading days
 
-Removes rows with `inf` or `NaN` in any feature column.
-
-**Returns:** Cleaned DataFrame with all features and forward return labels.
+Must be called **after** `build_features()`.
 
 ---
 
@@ -170,7 +219,7 @@ Constructs the ranking target variable used to train the XGBoost ranker.
 
 **Process:**
 1. Computes `risk_adj_ret = next_1m_ret / volatility_3m` (or `next_1w_ret / volatility_1m` for weekly)
-2. Bins each stock into 5 quintiles *within each trading day* using `pd.qcut` on risk-adjusted returns
+2. Bins each stock into 5 quintiles *within each trading day* using `pd.qcut` on risk-adjusted returns (with rank-based tie-breaking)
 3. Assigns a `target_quintile` label (0 = worst, 4 = best) per stock per day
 4. Assigns a `qid` (query ID) per day for XGBoost's ranking format
 
@@ -191,7 +240,7 @@ Transforms raw feature values into cross-sectional percentile ranks within each 
 
 ## `alpha_mining.py`
 
-**Purpose:** Implements WorldQuant-style quantitative alpha factors and a genetic programming (GP) framework for discovering new ones.
+**Purpose:** Implements six WorldQuant-style quantitative alpha factors and a genetic programming (GP) framework for discovering new ones.
 
 ### Operator Functions
 
@@ -210,7 +259,7 @@ Low-level time-series operators used internally by the `WorldQuantAlphas` class:
 
 ### `class WorldQuantAlphas`
 
-Computes nine WorldQuant alpha factors. On initialisation, OHLCV columns are shifted by 1 day (`T-1`) to prevent any same-day look-ahead.
+Computes six WorldQuant alpha factors. On initialisation, the DataFrame is sorted by `['Symbol', 'date']`. OHLCV data is used as-is — look-ahead is prevented upstream by the 1-day shift applied in `build_features()`.
 
 **Constructor:**
 ```python
@@ -219,21 +268,27 @@ wq = WorldQuantAlphas(df)  # df must have: Symbol, date, open, high, low, close,
 
 **Alpha Factors:**
 
-| Method | Formula Logic |
-|---|---|
-| `get_alpha_012()` | `sign(Δvolume) × (-Δclose)` — Buys when price drops but volume rises (supply exhaustion) |
-| `get_alpha_041()` | `√(high × low) - close` — Geometric mean of range vs. close |
-| `get_alpha_054()` | `-(low - close) × open⁵ / ((low - high) × close⁵)` — Intraday open/close range anomaly |
-| `get_alpha_101()` | `(close - open) / (high - low + 0.001)` — Intraday close strength (momentum) |
-| `get_alpha_006()` | `-corr(open, volume, 10)` — Negative open-volume correlation |
-| `get_alpha_024()` | Conditional mean-reversion: uses 100-day price trend direction |
-| `get_alpha_028()` | `corr(adv20, low, 5) + midprice - close` — Volume-adjusted midpoint deviation |
-| `get_alpha_053()` | `-Δ((close-low - high-close) / (close-low), 9)` — Momentum of intraday pressure |
-| `get_alpha_060()` | Money flow: `((close-low - high-close) / range) × volume` |
+| Method | Output Column | Formula Logic |
+|---|---|---|
+| `get_alpha_006()` | `WQ_Alpha_006` | `-corr(open, volume, 10)` — Negative open-volume correlation over 10 days |
+| `get_alpha_012()` | `WQ_Alpha_012` | `sign(Δvolume) × (-Δclose)` — Buys when price drops but volume rises (supply exhaustion) |
+| `get_alpha_024()` | `WQ_Alpha_024` | Conditional mean-reversion: compares 100-day price trend direction to decide between reversion and momentum |
+| `get_alpha_028()` | `WQ_Alpha_028` | `corr(adv20, low, 5) + midprice - close` — Volume-adjusted midpoint deviation |
+| `get_alpha_053()` | `WQ_Alpha_053` | `-Δ((close-low - high-close) / (close-low), 9)` — Momentum of intraday pressure |
+| `get_alpha_060()` | `WQ_Alpha_060` | Simplified directional money flow: `((close-low - high-close) / range) × volume` |
 
 **`generate_all() → DataFrame`**
 
-Computes all nine alphas, handles `inf`/`NaN`, and returns a DataFrame with columns `WQ_Alpha_012`, `WQ_Alpha_041`, etc.
+Computes all six alphas, replaces `inf`/`NaN` with `NaN`, and returns a DataFrame with columns `WQ_Alpha_006`, `WQ_Alpha_012`, `WQ_Alpha_024`, `WQ_Alpha_028`, `WQ_Alpha_053`, `WQ_Alpha_060`. This DataFrame should be merged into the raw OHLCV DataFrame *before* calling `build_features()`.
+
+```python
+wq = WorldQuantAlphas(df_raw)
+wq_cols_df = wq.generate_all()
+for col in wq_cols_df.columns:
+    df_raw[col] = wq_cols_df[col]
+```
+
+> **Note:** The production `final_features` in `config.py` uses three of these: `WQ_Alpha_012`, `WQ_Alpha_024`, and `WQ_Alpha_053`.
 
 ---
 
@@ -315,8 +370,7 @@ best_roi_row, best_sharpe_row, result_df = search_best_roi_and_sharpe(
     df,
     initial_capital=10_000,
     walk_forward_kwargs=dict(initial_train_months=24, test_months=6, gap_days=21),
-    backtest_kwargs=dict(buy_fraction=0.05, hold_fraction=0.15,
-                         trend_filter_col='dist_SMA_100'),
+    backtest_kwargs=dict(buy_fraction=0.05, trend_filter_col='dist_SMA_100'),
 )
 print(best_roi_row['combo_name'], best_roi_row['roi_%'])
 ```
@@ -325,7 +379,7 @@ print(best_roi_row['combo_name'], best_roi_row['roi_%'])
 
 ## `models.py`
 
-**Purpose:** Model training, walk-forward cross-validation, Optuna hyperparameter search, and the LSTM-Attention combiner training loop.
+**Purpose:** Model training, walk-forward cross-validation, Optuna hyperparameter search, and the LSTM sequence combiner training loop.
 
 ### Functions
 
@@ -333,7 +387,7 @@ print(best_roi_row['combo_name'], best_roi_row['roi_%'])
 
 #### `base_model() → dict`
 
-Returns the default XGBoost LambdaRank hyperparameters:
+Returns the default XGBoost LambdaRank hyperparameters used in production:
 
 ```python
 {
@@ -350,13 +404,13 @@ Returns the default XGBoost LambdaRank hyperparameters:
 
 ---
 
-#### `alpha_model() → dict`
+#### `testing_model() → dict`
 
-Returns GPU-accelerated hyperparameters (requires CUDA) with stronger regularisation, intended for the alpha combiner experiments.
+Returns an alternative hyperparameter set with `lambdarank_pair_method='topk'` and `lambdarank_num_pair_per_sample=10`, intended for experimental comparisons.
 
 ---
 
-#### `walk_forward_cv(df, features, model_params, initial_train_months, test_months, gap_days, callback, use_mega, use_gp) → DataFrame`
+#### `walk_forward_cv(df, features, model_params=None, initial_train_months=12, test_months=6, gap_days=21, callback=None, use_mega=False, use_gp=False) → DataFrame`
 
 The core training and evaluation function. Simulates live deployment by rolling through time:
 
@@ -364,22 +418,22 @@ The core training and evaluation function. Simulates live deployment by rolling 
 2. Evaluate on `test_start` → `test_start + test_months`
 3. Advance the window and repeat
 
-At each fold, the model is fitted with the OOS test set as `eval_set`, allowing XGBoost's built-in early stopping logic.
+At each fold, the model is fitted on the training slice and predictions are stored as `pred_score` in the OOS test DataFrame. Per-fold NDCG is computed and printed.
 
 **Parameters:**
 
 | Parameter | Default | Description |
 |---|---|---|
-| `initial_train_months` | `12` | Months of data required before first test fold. The notebooks use `24`. |
+| `initial_train_months` | `12` | Months of data required before first test fold. **The notebooks and all published results use `24` — always pass this explicitly.** |
 | `test_months` | `6` | Length of each test window |
 | `gap_days` | `21` | Trading day gap between train end and test start |
 | `callback` | `None` | Optional `fn(fold, total_folds, message)` for UI progress updates |
-| `use_mega` | `False` | Enable LSTM-Attention alpha combiner (experimental, unstable OOS) |
+| `use_mega` | `False` | Enable LSTM sequence combiner (experimental, unstable OOS) |
 | `use_gp` | `False` | Enable GP alpha mining per fold (experimental) |
 
-> **Note:** The published backtest results use `initial_train_months=24`. The function default of `12` is a code default only. Always pass `initial_train_months=24` to reproduce the reported numbers.
+> **Note:** The function default of `initial_train_months=12` is a code default only. Always pass `initial_train_months=24` to reproduce the reported backtest results.
 
-**Returns:** Concatenated OOS predictions DataFrame with a `pred_score` column.
+**Returns:** Concatenated OOS predictions DataFrame with a `pred_score` column. Pass directly to `simulate_portfolio()` or `compute_top_quantile_win_rate()`.
 
 ---
 
@@ -393,25 +447,35 @@ Uses Optuna to find the best XGBoost hyperparameters. Trains on data up to 2023-
 
 #### `train_mega_combiner(train_df, alpha_cols, epochs=5) → DynamicAlphaCombiner`
 
-Trains the LSTM-Attention model (see `deep_combiner.py`) on the training slice to produce a `Mega_Alpha` scalar from a set of alpha signals.
+Trains the LSTM sequence model (see `deep_combiner.py`) on the training slice to produce a `Mega_Alpha` scalar from a set of alpha signals. Uses Adam optimiser and MSE loss against `risk_adj_ret`.
 
 ---
 
 #### `test_train_spliter(df, test_start, features) → tuple`
 
-Simple utility for a single train/test split at a given date (with the 30-day gap). Used for one-off experiments outside the walk-forward loop.
+Simple utility for a single train/test split at a given date (with a 30-day gap). Used for one-off experiments outside the walk-forward loop.
+
+**Returns:** `(X_train, y_train, qids_train, X_test, y_test, qids_test, test_df)`
 
 ---
 
 ## `evaluation.py`
 
-**Purpose:** Backtest engine, portfolio performance metrics, and feature quality metrics on OOS predictions.
+**Purpose:** Backtest engine, portfolio performance metrics, model IC, and feature quality metrics on OOS predictions.
 
 ### Functions
 
 ---
 
-#### `evaluate_ranking_performance(test_df, X_test, ranker, top_quantile, ret_col) → dict`
+#### `compute_model_ic(test_df, pred_col='pred_score', ret_col='next_1m_ret') → dict`
+
+Computes the overall model-level Information Coefficient: the Spearman rank correlation between the model's `pred_score` and actual `next_1m_ret` across all OOS predictions, computed daily then averaged.
+
+**Returns:** Dictionary with keys `ic_mean`, `ic_std`, `ic_ir`, `daily_ic`.
+
+---
+
+#### `compute_top_quantile_win_rate(test_df, X_test=None, ranker=None, top_quantile=0.2, ret_col='next_1m_ret') → dict`
 
 Evaluates the ranker's practical trading performance.
 
@@ -436,47 +500,63 @@ Supports two modes:
 
 ---
 
-#### `predicted_quintile_chart(test_df, X_test, ranker) → None`
-
-Plots a bar chart of average forward return by predicted quintile (1 = worst to 5 = best). A well-calibrated ranker should show a strictly increasing return from quintile 1 to 5. Supports both static and dynamic modes (same as `evaluate_ranking_performance`).
-
----
-
-#### `feature_influence_ic(test_df, features, target_col) → DataFrame`
+#### `plot_feature_ic(test_df, features, target_col='next_1m_ret') → DataFrame`
 
 Plots and prints Information Coefficient (IC) statistics for each feature:
 
-- **IC Mean** — Average Spearman correlation with `target_col` (e.g., `next_1m_ret`) across all test dates
+- **IC Mean** — Average Spearman correlation with `target_col` across all test dates
 - **IC Std** — Volatility of that correlation over time
-- **IC IR** — IC Mean / IC Std — the "signal-to-noise ratio" of each feature
 
-Features with IC IR > 0.5 are generally considered worth retaining.
-
-**Returns:** DataFrame with columns `IC Mean`, `IC Std`, `IC IR` indexed by feature name.
+**Returns:** DataFrame with columns `IC Mean`, `IC Std` indexed by feature name.
 
 ---
 
-#### `feature_influence(model, features) → None`
+#### `plot_feature_ir(test_df, features, target_col='next_1m_ret') → DataFrame`
 
-Plots a horizontal bar chart of XGBoost gain-based feature importance.
+Extends `plot_feature_ic` to also compute and plot **IC IR** (IC Mean / IC Std) — the signal-to-noise ratio of each feature. Features with IC IR > 0.5 are generally considered worth retaining.
 
 ---
 
-#### `plot_rolling_ic_ir(test_df, feature, target_col, window) → None`
+#### `plot_feature_rolling_ir(test_df, feature, target_col='next_1m_ret', window=6) → None`
 
 Plots the rolling IC IR for a single feature over time (default: 6-month rolling window). Useful for diagnosing whether a feature's predictive power is stable or regime-dependent.
 
 ---
 
-#### `run_xgboost_backtest(df, model, features, initial_capital, buy_fraction, hold_fraction, trailing_stop, take_profit, time_of_rebalance, trend_filter_col, settlement_delay) → DataFrame`
+#### `plot_feature_importances(model, features) → None`
+
+Plots a horizontal bar chart of XGBoost gain-based feature importance.
+
+---
+
+#### `plot_return_by_predicted_quintile(test_df, X_test=None, ranker=None) → None`
+
+Plots a bar chart of average forward return by predicted quintile (1 = worst to 5 = best). A well-calibrated ranker should show a strictly increasing return from quintile 1 to 5. Supports both static and dynamic modes.
+
+---
+
+#### `plot_equity_curves(*results, labels=None, normalize=False) → None`
+
+Plots one or more equity curves on the same chart. Pass `normalize=True` to show cumulative return (%) normalised to a common start — useful for comparing the baseline XGBoost model against the experimental LSTM model.
+
+**Example:**
+```python
+ev.plot_equity_curves(result_basic, result_mega,
+                      labels=['XGBoost Baseline', 'LSTM Advanced'],
+                      normalize=True)
+```
+
+---
+
+#### `simulate_portfolio(df, model, features, initial_capital, buy_fraction, time_of_rebalance, trend_filter_col, settlement_delay, vnindex_df, vol_lookback, vol_percentile, vol_window) → DataFrame`
 
 Simulates a realistic portfolio with VN-market timing conventions.
 
 **Execution model:**
-1. **Rebalance morning (day 0):** Model scores stocks → ranks universe → sells exiting positions at today's price
-2. **Settlement (day +3):** Sell proceeds become available → new buy orders execute at settlement-day prices
+1. **Rebalance morning (day 0):** Model scores stocks → ranks universe → sells exiting positions at today's price; sell proceeds enter `pending_cash` (available after T+`settlement_delay`)
+2. **Settlement (day +3):** Pending cash becomes available → new buy orders execute at settlement-day prices
 
-This correctly models VN T+2.5 settlement — you cannot buy with money from the same-day sell.
+This correctly models VN T+3 settlement — you cannot buy with money from the same-day sell.
 
 **Parameters:**
 
@@ -484,25 +564,30 @@ This correctly models VN T+2.5 settlement — you cannot buy with money from the
 |---|---|---|
 | `model` | — | Trained XGBRanker; pass `None` to use existing `pred_score` column |
 | `buy_fraction` | `0.05` | Top X% of ranked stocks are buy targets |
-| `hold_fraction` | `0.15` | Top Y% of ranked stocks are hold targets (grace band, Y > X) |
-| `trailing_stop` | `-0.10` | Sell if drawdown from peak ≤ this value |
-| `take_profit` | `0.50` | Sell if return since buy ≥ this value |
 | `time_of_rebalance` | `'M'` | Pandas period alias: `'M'` = monthly, `'W'` = weekly |
-| `trend_filter_col` | `'dist_SMA_50'` | Stock must have this column > 1.0 to qualify as a new buy. Pass `None` to disable. |
+| `trend_filter_col` | `'dist_SMA_100'` | Stock must have this column > 1.0 to qualify as a new buy. Pass `None` to disable. |
 | `settlement_delay` | `3` | Trading days between sell and cash availability |
+| `vnindex_df` | `None` | Optional VNINDEX DataFrame for volatility regime filtering (see below) |
+| `vol_lookback` | `21` | Days for realised VNINDEX volatility calculation |
+| `vol_percentile` | `0.80` | Vol percentile threshold; above this = high-vol regime → rebalance skipped |
+| `vol_window` | `252` | Rolling window for computing the percentile benchmark |
+
+> **Note:** `hold_fraction`, `trailing_stop`, and `take_profit` are **not** parameters of the current `simulate_portfolio()` implementation. The sell logic is purely rank-based: a stock is sold if it no longer appears in the top `buy_fraction` targets.
+
+> **Volatility Regime Filter:** When `vnindex_df` is provided, rebalance months where VNINDEX realised vol exceeds the `vol_percentile` of its own history are skipped. NAV is still recorded to maintain a continuous equity curve.
 
 **Returns:** DataFrame with columns `date`, `total_value`, `cash`, `pending_cash`, `number_of_holdings`.
 
 ---
 
-#### `compute_metrics(result, initial_capital, rf_annual) → dict`
+#### `print_performance_report(result, initial_capital=None, rf_annual=0.045) → dict`
 
 Computes and prints a full risk-adjusted performance report from a backtest equity curve.
 
 **Metrics computed:** Total Return, CAGR, Sharpe Ratio, Sortino Ratio, Calmar Ratio, Max Drawdown, Monthly Win Rate, Profit Factor.
 
 **Parameters:**
-- `result` — DataFrame returned by `run_xgboost_backtest`
+- `result` — DataFrame returned by `simulate_portfolio`
 - `initial_capital` — Starting capital; if `None`, uses `result['total_value'].iloc[0]`
 - `rf_annual` — Annual risk-free rate (default `0.045` — approximate Vietnam T-bill rate)
 
@@ -510,23 +595,21 @@ Computes and prints a full risk-adjusted performance report from a backtest equi
 
 ---
 
-#### `capital_over_time(result) → None`
+#### `pretrain_and_save_artifacts(df, selected_features, use_mega_alpha, output_dir, vnindex_df) → (str, str, str)`
 
-Plots the portfolio equity curve (total value over time) from a backtest result DataFrame.
+Utility function used by the GitHub Actions precompute workflow. Runs the full walk-forward CV and backtest pipeline (`initial_train_months=24`, `test_months=6`, `gap_days=21`) and saves three artifacts so the Streamlit app can load them instantly without retraining.
 
----
+**Parameters:**
+- `df` — Fully processed DataFrame (features + targets + `qid` must already exist)
+- `selected_features` — List of feature column names to train on
+- `use_mega_alpha` — Reserved for future use; currently always runs XGBoost only
+- `output_dir` (`str`, default `"data/pretrained/"`) — Directory where artifacts are saved
+- `vnindex_df` — Reserved for future use; currently unused
 
-#### `plot_model_comparison(res_base, res_lstm) → None`
-
-Plots two equity curves on the same chart as cumulative return (%), normalised to a common start. Used to compare the baseline XGBoost model against the experimental LSTM model.
-
----
-
-#### `generate_and_save_pretrained_model(df, selected_features, use_mega_alpha, output_dir) → (str, str)`
-
-Utility function used by the GitHub Actions precompute workflow. Runs the full walk-forward CV and backtest pipeline and saves the resulting predictions and equity curve to Parquet files so the Streamlit app can load them instantly without retraining.
-
-**Returns:** `(predictions_path, equity_curve_path)`
+**Returns:** `(predictions_path, equity_curve_path, final_model_path)` — paths to the three saved artifacts:
+- `pretrained_predictions.parquet` — Full OOS predictions DataFrame
+- `pretrained_equity_curve.parquet` — Equity curve from the backtest
+- `pretrained_model.json` — Final XGBoost model trained on all available data
 
 ---
 
@@ -538,15 +621,15 @@ Utility function used by the GitHub Actions precompute workflow. Runs the full w
 
 ---
 
-#### `generate_paper_trade_signals(df, current_portfolio, features, use_mega, buy_n, hold_n, trend_filter_col, trend_filter_threshold, target_col) → tuple`
+#### `generate_paper_trade_signals(df, current_portfolio, features, use_mega=False, model=None, buy_n=10, trend_filter_col='dist_SMA_100', trend_filter_threshold=1.0, target_col='target_quintile') → tuple`
 
-The main inference function. Trains on all data up to (but not including) today's date, then scores today's VN100 universe.
+The main inference function. If no pretrained `model` is passed, trains a fresh XGBoost ranker on all historical data up to (but not including) today's date, then scores today's VN100 universe.
 
 **Signal generation logic:**
 
 1. **Portfolio review** — For each currently held symbol:
    - If not in today's VN100 → `NOT_VN100`
-   - If rank > `hold_n` → `SELL`
+   - If rank > `buy_n` → `SELL`
    - Otherwise → `HOLD`
 
 2. **New buy candidates** — From the top `buy_n` ranked stocks today:
@@ -558,13 +641,17 @@ The main inference function. Trains on all data up to (but not including) today'
 
 | Parameter | Default | Description |
 |---|---|---|
-| `buy_n` | `5` | Number of top-ranked stocks targeted for new entries |
-| `hold_n` | `15` | Grace band — hold any existing position ranked within top `hold_n` |
-| `trend_filter_col` | `'dist_SMA_50'` | Feature column for the trend filter |
+| `buy_n` | `10` | Top N stocks targeted for new entries; also the hold threshold |
+| `trend_filter_col` | `'dist_SMA_100'` | Feature column for the trend filter |
 | `trend_filter_threshold` | `1.0` | Stock must be above this value to qualify as a new buy |
-| `use_mega` | `False` | Placeholder — LSTM inference path is not yet wired up in this function |
+| `use_mega` | `False` | Not yet implemented — raises `NotImplementedError` if `True` |
+| `model` | `None` | Pass a pretrained `XGBRanker` to skip training (used by the dashboard) |
+
+> **Note:** `use_mega=True` currently raises `NotImplementedError`. The LSTM inference path is not yet implemented in this function.
 
 **Returns:** `(buy_list, hold_list, sell_list, not_vn100_list, ranked_today_df)`
+
+where `ranked_today_df` has columns `Symbol`, `live_score`, `rank`.
 
 ---
 
@@ -586,20 +673,20 @@ Thin wrapper around `generate_paper_trade_signals` that returns a clean dictiona
 
 ## `deep_combiner.py`
 
-**Purpose:** Experimental LSTM-Attention model that learns to dynamically weight a set of alpha signals based on current market context.
+**Purpose:** Experimental LSTM sequence model that learns to dynamically weight a set of alpha signals based on market context.
 
-**Status:** Experimental. In walk-forward backtesting this model was found to be less stable than the baseline XGBoost ranker — it exhibited erratic equity curves and significant sensitivity to hyperparameter tuning. The production pipeline uses XGBoost only. The `use_mega=True` path in `inference.py` is a placeholder stub and is not yet connected to this model.
+**Status:** Experimental. In walk-forward backtesting this model was found to be less stable than the baseline XGBoost ranker — it exhibited erratic equity curves, significant sensitivity to hyperparameters, and overfitting to specific historical market regimes. The production pipeline uses XGBoost only. The `use_mega=True` path in `inference.py` is a placeholder stub and is not yet connected to this model.
 
 ### `class DynamicAlphaCombiner(nn.Module)`
 
 **Architecture:**
-1. **Context LSTM** — Reads a sequence of alpha values and encodes the market state into a 16-dimensional hidden vector
-2. **Attention Scoring** — A two-layer MLP (`Linear → Tanh → Linear → Softmax`) maps the hidden state to a probability distribution over alpha signals
+1. **Context LSTM** — Reads a sequence of alpha values (`input_size=num_alphas`, `hidden_size=16`) and encodes the market state into a 16-dimensional hidden vector
+2. **Attention Scoring** — A two-layer MLP (`Linear(16→8) → Tanh → Linear(8→num_alphas) → Softmax`) maps the hidden state to a probability distribution over alpha signals
 3. **Weighted Sum** — Current-step alpha values are combined using the attention weights to produce a single `Mega_Alpha` scalar
 
 **Constructor:**
 ```python
-model = DynamicAlphaCombiner(num_alphas=9)
+model = DynamicAlphaCombiner(num_alphas=6)  # one per WorldQuant alpha column
 ```
 
 **Forward pass:**
@@ -610,7 +697,7 @@ mega_alpha, attention_weights = model(alphas_seq)
 # attention_weights: Tensor of shape [batch, num_alphas]
 ```
 
-**Training:** See `train_mega_combiner()` in `models.py`. Trained with Adam + MSE loss against `risk_adj_ret`.
+**Training:** See `train_mega_combiner()` in `models.py`. Trained with Adam + MSE loss against `risk_adj_ret`. In the walk-forward loop, the model is given a single time-step (`unsqueeze(1)`) rather than a true sequence — this simplification limits the temporal modelling capacity.
 
 ---
 
@@ -628,15 +715,37 @@ The app is organised into three main sections rendered on a single page:
 - `display_portfolio_signals_ui()` — Renders the live Buy / Hold / Sell signal table for a user-defined portfolio, using `inference.generate_paper_trade_signals()` on demand.
 
 **2. Backtest & Analytics Panel**
-- Strategy settings (buy/hold fraction, trend filter, rebalance frequency) are controlled from the sidebar.
+- Strategy settings (buy fraction, trend filter, rebalance frequency) are controlled from the sidebar.
 - Renders an interactive Plotly equity curve of the pre-computed backtest.
 - Displays portfolio metrics (Final NAV, CAGR, Sharpe) via `st.metric`.
 - Feature importance and IC charts are computed from the pre-loaded OOS predictions.
-- Quintile monotonicity chart (`evaluation.predicted_quintile_chart`) validates ranking quality visually.
+- Quintile monotonicity chart (`evaluation.plot_return_by_predicted_quintile`) validates ranking quality visually.
 
 **3. Gemini AI Commentary**
-- `process_chat()` — A Messenger-style chat widget powered by the Google Gemini API. It receives a structured prompt containing the current backtest metrics and feature IC data, and returns a natural-language market commentary.
+- `process_chat()` — A Messenger-style chat widget powered by the Google Gemini API (`google-genai`). It receives a structured prompt containing the current backtest metrics and feature IC data, and returns natural-language market commentary.
 - The chat history is maintained in `st.session_state` for the duration of the session.
+
+---
+
+## `config.py`
+
+**Purpose:** Centralised definition of the production feature set and full candidate feature list.
+
+```python
+final_features = [
+    'log_ret_6m',
+    'volatility_1w', 'volatility_1m',
+    'volatility_shock_monthly', 'volatility_shock_weekly',
+    'dist_EMA_9',
+    'volume_surge_monthly', 'volume_surge_weekly',
+    'WQ_Alpha_012', 'WQ_Alpha_024', 'WQ_Alpha_053',
+    'dist_EMA_100',
+]
+```
+
+`dist_EMA_100` was re-introduced despite being pruned in the initial correlation analysis — ablation testing showed consistent OOS improvement, suggesting it carries complementary information within the tree ensemble.
+
+`candidate_features` contains the full set of engineered features available for feature group search experiments.
 
 ---
 
@@ -647,12 +756,14 @@ build_vn100()
     └─► update_market_data() ──► market_data.parquet
                                         │
                                         ▼
-                               build_features()
-                               (features.py)
-                                        │
-                                        ▼
                            WorldQuantAlphas.generate_all()
                            (alpha_mining.py)
+                           Produces: WQ_Alpha_006/012/024/028/053/060
+                                        │
+                                        ▼
+                               build_features()
+                               build_targets()
+                               (features.py)
                                         │
                                         ▼
                           target_generating_ranking()
@@ -660,25 +771,30 @@ build_vn100()
                             ┌───────────┴──────────────────────┐
                             │                                  │
                    (optional)                                  │
-              search_best_roi_and_sharpe()                     │
+              search_best_roi_and_sharpe()             config.final_features
               (feature_search.py)                              │
               → select best feature groups                     │
                             │                                  │
                             └──────────────┬───────────────────┘
                                            │
-                                  walk_forward_cv()
+                                  walk_forward_cv(df, features,
+                                    initial_train_months=24,
+                                    test_months=6, gap_days=21)
                                   (models.py)
                                            │
                          ┌─────────────────┴──────────────────┐
                          │                                    │
-              evaluate_ranking_performance()    generate_paper_trade_signals()
-              run_xgboost_backtest()            (inference.py — live signals)
-              compute_metrics()
+              compute_top_quantile_win_rate()    generate_paper_trade_signals()
+              compute_model_ic()              (inference.py — live signals)
+              simulate_portfolio()
+              print_performance_report()
               (evaluation.py — backtest)
                          │
                          ▼
-              generate_and_save_pretrained_model()
-              (evaluation.py — saves artifacts)
+              pretrain_and_save_artifacts()
+              → pretrained_predictions.parquet
+              → pretrained_equity_curve.parquet
+              → pretrained_model.json
                          │
                          ▼
                       app.py
