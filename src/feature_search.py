@@ -3,7 +3,7 @@ feature_search.py
 -----------------
 Searches every combination of feature *groups* (as defined in features.py)
 to find which combination produces the highest final ROI when evaluated via
-walk_forward_cv + run_xgboost_backtest.
+walk_forward_cv + simulate_portfolio.
 
 Feature groups
 --------------
@@ -44,7 +44,8 @@ import traceback
 from typing import Optional
 
 import pandas as pd
-
+from src.features import seed_everything
+seed_everything(42)
 # ---------------------------------------------------------------------------
 # Feature group definitions (mirrors the functions in features.py)
 # ---------------------------------------------------------------------------
@@ -57,7 +58,6 @@ FEATURE_GROUPS: dict[str, list[str]] = {
         "log_ret_1y",
     ],
     "volatility": [
-        #"log_ret_daily",
         "volatility_1w",
         "volatility_1m",
         "volatility_3m",
@@ -66,19 +66,14 @@ FEATURE_GROUPS: dict[str, list[str]] = {
         "volatility_shock_weekly",
     ],
     "moving_average": [
-        #"SMA_14", "SMA_20", "SMA_50", "SMA_100",
-        #"EMA_14", "EMA_20", "EMA_50", "EMA_100",
         "dist_SMA_9", "dist_SMA_21", "dist_SMA_50","dist_SMA_100","dist_SMA_200",
         "dist_EMA_9", "dist_EMA_21", "dist_EMA_50","dist_EMA_100","dist_EMA_200",
     ],
     "volume": [
-        #"vol_5d",
-        #"vol_1m",
-        #"vol_3m",
         "volume_surge_monthly",
         "volume_surge_weekly",
         "obv_trend",
-        "price_vol_divergence"
+        "price_vol_divergence",
     ],
     "rsi": [
         "RSI_14",
@@ -144,7 +139,7 @@ def _run_combo_search(
     verbose: bool = True,
 ) -> tuple[list[str], float, pd.DataFrame]:
 
-    from src.evaluation import run_xgboost_backtest
+    from src.evaluation import simulate_portfolio
     from src.models import walk_forward_cv
 
     wf_kwargs = dict(
@@ -199,7 +194,7 @@ def _run_combo_search(
                 df=df, features=features,
                 model_params=model_params, **wf_kwargs,
             )
-            history = run_xgboost_backtest(
+            history = simulate_portfolio(
                 df=oos_df, model=None, features=None,
                 initial_capital=initial_capital, **bt_kwargs,
             )
@@ -336,7 +331,7 @@ def search_best_roi_and_sharpe(
     Runs the search once and identifies the best combo for ROI 
     and the best combo for Sharpe Ratio separately.
     """
-    from src.evaluation import run_xgboost_backtest
+    from src.evaluation import simulate_portfolio
     from src.models import walk_forward_cv
 
     # 1. Setup default parameters
@@ -364,7 +359,7 @@ def search_best_roi_and_sharpe(
         try:
             # Execute simulation (the expensive part)
             oos_df = walk_forward_cv(df=df, features=features, model_params=model_params, **wf_kwargs)
-            history = run_xgboost_backtest(df=oos_df, model=None, features=None, initial_capital=initial_capital, **bt_kwargs)
+            history = simulate_portfolio(df=oos_df, model=None, features=None, initial_capital=initial_capital, **bt_kwargs)
 
             # Calculate both metrics from the SAME history object
             roi_val = _final_roi(history)

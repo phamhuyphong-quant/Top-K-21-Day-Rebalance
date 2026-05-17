@@ -1,6 +1,7 @@
-import os, sys
+import os, sys, random, numpy as np
 
-
+random.seed(42)
+np.random.seed(42)
 # ── 1. Clone main branch (source code) ───────────────────────────────────────
 GH_PAT = os.environ.get('GH_PAT') or os.environ.get('GITHUB_TOKEN', '')
 os.system(f"git clone --depth 1 --branch main https://{GH_PAT}@github.com/Masterokadanori/Cross_Sectional_Rank_VN100.git /kaggle/working/repo")
@@ -18,44 +19,25 @@ os.system("pip install -q -r /kaggle/working/repo/requirements.txt")
 os.chdir('/kaggle/working/repo')
 sys.path.insert(0, '/kaggle/working/repo')
 
-from src.features import build_features, target_generating_ranking
-from src.evaluation import generate_and_save_pretrained_model
+from src.features import build_features, target_generating_ranking,build_targets
+from src.evaluation import pretrain_and_save_artifacts
 from src.alpha_mining import WorldQuantAlphas
 import pandas as pd
-
+from config import final_features
 df_raw = pd.read_parquet('data/market_data.parquet')
+df_raw = df_raw[df_raw["close"] > 0].copy()
 wq = WorldQuantAlphas(df_raw)
 wq_cols_df = wq.generate_all()
-df_raw[wq_cols_df.columns] = wq_cols_df.values
+for col in wq_cols_df.columns:
+    df_raw[col] = wq_cols_df[col]
 df = build_features(df_raw)
+df=build_targets(df)
 df = target_generating_ranking(df)
 
-best_features = ['log_ret_1w',
-                 'log_ret_1m', 
-                 'log_ret_3m', 'log_ret_6m', 
-                 'log_ret_1y',
-                 
-                 'volatility_1w',
-                 'volatility_1m',
-                 'volatility_3m',
-                 'volatility_6m',
-                 'volatility_shock_monthly',
-                 'volatility_shock_weekly',
-                 'volume_surge_monthly',
-                 'volume_surge_weekly',
-                 'obv_trend',
-                 'price_vol_divergence',
-                 
-                 'WQ_Alpha_012',
-                 'WQ_Alpha_024', 
-                 'WQ_Alpha_028', 
-                 'WQ_Alpha_053',
-                 'WQ_Alpha_060',
-                 
-                 'dist_52w_high', 
-                 'log_ret_skip1m']
+best_features = final_features
 
-generate_and_save_pretrained_model(
+
+pretrain_and_save_artifacts(
     df=df,
     selected_features=best_features,
     use_mega_alpha=False,
