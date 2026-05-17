@@ -1,6 +1,9 @@
 import torch
 import torch.nn as nn
-
+import sys,os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from src.features import seed_everything
+seed_everything(42)
 class DynamicAlphaCombiner(nn.Module):
     def __init__(self, num_alphas):
         super(DynamicAlphaCombiner, self).__init__()
