@@ -24,7 +24,7 @@ import datetime
 def _today_vn() -> str:
     """Returns today's date in Vietnam time (UTC+7) as a string key like '2025-05-01'.
     Used as a cache-buster so data is always fresh after midnight VN time."""
-    return (datetime.datetime.utcnow() + datetime.timedelta(hours=7)).strftime("%Y-%m-%d")
+    return (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=7)).strftime("%Y-%m-%d")
 
 @st.cache_data(ttl=3600)
 def load_data(_date_key: str = None):  
@@ -372,7 +372,7 @@ if fold_records:
         return f'color: {colour}; font-weight: bold'
     
     st.dataframe(
-        fold_metrics_df.style.applymap(colour_ndcg, subset=['Avg NDCG']),
+        fold_metrics_df.style.map(colour_ndcg, subset=['Avg NDCG']),
         use_container_width=True
     )
     
