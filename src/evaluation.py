@@ -7,7 +7,7 @@ import numpy as np
 from scipy.stats import spearmanr
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from src.features import seed_everything
-from src.models import base_model
+from config import BASE_MODEL_PARAMS
 seed_everything(42)
 from src.models import walk_forward_cv
 def plot_feature_importances(model, features):
@@ -25,9 +25,9 @@ def compute_model_ic(test_df, pred_col='pred_score', ret_col='next_1m_ret'):
     ic_std  = daily_ic.std()
     ic_ir   = ic_mean / ic_std if ic_std > 0 else 0
 
-    print(f"IC Mean : {ic_mean:.4f}   (target: > 0.05)")
-    print(f"IC Std  : {ic_std:.4f}")
-    print(f"IC IR   : {ic_ir:.4f}   (target: > 0.5)")
+    print(f"IC Mean : {ic_mean:.4f}   (target: > 0.05 | good: 0.05–0.08 | ref: XGBRanker NDCG baseline ~0.08, regression ~0.044 [LambdaRankIC, Lin et al. 2025])")
+    print(f"IC Std  : {ic_std:.4f}   (target: < 0.12 | lower = more stable signal; typical range 0.08–0.15 for 300-stock universe)")
+    print(f"IC IR   : {ic_ir:.4f}   (target: > 0.3  | good: 0.3–0.5 | strong: > 0.5 [practitioner consensus]; small universe inflates Std so > 0.3 is realistic here)")
 
     return {'ic_mean': ic_mean, 'ic_std': ic_std, 'ic_ir': ic_ir, 'daily_ic': daily_ic}
 
@@ -96,31 +96,31 @@ def plot_feature_ic(test_df, features, target_col='next_1m_ret'):
     plt.grid(axis='x', linestyle='--', alpha=0.7)
     plt.tight_layout()
     plt.show()
-def plot_feature_ir(test_df,features,target_col='next_1m_ret'):
-    #Calculates IC Mean, IC Std, and IC IR for each feature.
-    #IC IR = Mean(Daily IC) / Std(Daily IC)
+
+def plot_feature_ir(test_df, features, target_col='next_1m_ret'):
+    # Calculates IC Mean, IC Std, and IC IR for each feature.
+    # IC IR = Mean(Daily IC) / Std(Daily IC)
 
     ic_ir_results = {}
 
     for feat in features:
         # 1. Calculate IC for each date (Time-series of ICs)
-        # We group by 'date' and correlate the feature with the target for that specific day
         daily_ic = test_df.groupby('date').apply(
-    lambda x: x[feat].corr(x[target_col], method='spearman'),
-    include_groups=False
-)
+            lambda x: x[feat].corr(x[target_col], method='spearman'),
+            include_groups=False
+        )
         
         # 2. Calculate Metrics
         ic_mean = daily_ic.mean()
-        ic_std = daily_ic.std()
+        ic_std  = daily_ic.std()
         
         # Avoid division by zero if std is 0
         ic_ir = ic_mean / ic_std if ic_std > 0 else 0
         
         ic_ir_results[feat] = {
             'IC Mean': ic_mean,
-            'IC Std': ic_std,
-            'IC IR': ic_ir
+            'IC Std':  ic_std,
+            'IC IR':   ic_ir
         }
 
     # Convert to DataFrame for easy viewing and plotting
@@ -142,9 +142,9 @@ def plot_feature_ir(test_df,features,target_col='next_1m_ret'):
 def plot_feature_rolling_ir(test_df, feature, target_col='next_1m_ret', window=6):
     # Calculate monthly ICs
     monthly_ic = test_df.groupby(test_df['date'].dt.to_period('M')).apply(
-    lambda x: x[feature].corr(x[target_col], method='spearman'),
-    include_groups=False
-)
+        lambda x: x[feature].corr(x[target_col], method='spearman'),
+        include_groups=False
+    )
     
     # Calculate rolling IR
     rolling_ir = monthly_ic.rolling(window=window).mean() / monthly_ic.rolling(window=window).std()
@@ -152,6 +152,7 @@ def plot_feature_rolling_ir(test_df, feature, target_col='next_1m_ret', window=6
     rolling_ir.plot(title=f'Rolling {window}-Month IC IR for {feature}')
     plt.axhline(0, color='black', linestyle='--')
     plt.show()
+
 def plot_return_by_predicted_quintile(test_df, X_test=None, ranker=None):
     """
     Plots average forward return by predicted quintile.
@@ -219,8 +220,6 @@ def print_performance_report(result, initial_capital=None, rf_annual=0.045):
     initial_capital : Starting capital. If None, uses result['total_value'].iloc[0]
     rf_annual       : Annual risk-free rate. Default 4.5% (approx Vietnam T-bill rate)
     """
-    import numpy as np
-
     nav = result['total_value'].copy()
     
     if initial_capital is None:
@@ -258,8 +257,8 @@ def print_performance_report(result, initial_capital=None, rf_annual=0.045):
     win_rate     = (monthly_returns > 0).mean()
 
     # Profit factor = sum of gains / sum of losses
-    gains        = monthly_returns[monthly_returns > 0].sum()
-    losses       = abs(monthly_returns[monthly_returns < 0].sum())
+    gains         = monthly_returns[monthly_returns > 0].sum()
+    losses        = abs(monthly_returns[monthly_returns < 0].sum())
     profit_factor = gains / losses if losses > 0 else np.nan
 
     # --- Print ---
@@ -290,61 +289,86 @@ def print_performance_report(result, initial_capital=None, rf_annual=0.045):
         'profit_factor' : profit_factor,
     }
 
-
 def simulate_portfolio(
     df,
     model,
     features,
-    initial_capital=10000,
+    initial_capital=10_000_000,
     buy_fraction=0.05,
     time_of_rebalance='M',
     trend_filter_col='dist_SMA_100',
     settlement_delay=3,
     vnindex_df=None,
-    vol_lookback=21,          # days for realized vol calculation
-    vol_percentile=0.80,      # percentile threshold — above this = high vol = skip
+    liquidity_filter = True,
+    vol_lookback=21,
+    vol_percentile=0.80,
     vol_window=252,
+    adtv_lookback=20,           # days for ADTV calculation
+    adtv_participation=0.10,    # your order must be <= this fraction of ADTV
 ):
     """
-    Simulates a portfolio with the correct VN-market timing:
+    Hard-rebalance portfolio simulator for VN market with clean monthly timing:
 
-        REBALANCE MORNING (first trading day of month)
-        ├── Step 1: Model predicts scores → ranks all stocks
-        ├── Step 2: SELL — stocks that no longer qualify exit at today's price
-        │           └── proceeds go into pending_cash (available after T+settlement_delay)
-        └── Step 3: Schedule a DEFERRED BUY on the settlement date
-                    └── On that date, use ALL available cash (settled proceeds + any
-                        existing free cash) to buy the new target stocks at that day's price
+        REBALANCE DAY (first trading day of month)
+        ├── Step 1: Model scores & ranks all stocks
+        ├── Step 2: HARD SELL — every stock NOT in top-N exits today at today's price
+        │           └── proceeds → pending_cash, available on day +settlement_delay
+        └── Step 3: Schedule BUY to execute exactly on settlement_date (T+3)
+                    └── On that date, available cash is split equally across stocks
+                        that pass BOTH the trend filter AND the ADTV liquidity filter,
+                        and whose price allows at least 1 lot (100 shares).
 
-    This means:
-      - Sells happen on rebalance morning (day 0)
-      - Cash is available on day +settlement_delay (T+3 by default)
-      - Buys execute on that settlement date at settlement-date prices
-      - No free-riding: you cannot buy with money from the same-day sell
+    Key design decisions
+    --------------------
+    - Hard rebalance: no grace band. If a stock falls out of top-N it is sold.
+    - Sells happen exactly once per month on rebalance day.
+    - Buys happen exactly once per month on rebalance_day + T+settlement_delay.
+    - The two events never overlap in the same loop iteration.
+    - ADTV filter: position size must be <= adtv_participation * adtv_20d so we
+      only buy stocks liquid enough to absorb our order.
+    - Two-pass buy execution: Pass 1 finds all stocks that will actually fill
+      (have a valid price and can afford >= 1 lot). Pass 2 divides cash only
+      among those confirmed-executable stocks so no cash is left stranded.
 
     Parameters
     ----------
-    df               : DataFrame with columns [date, Symbol, close, pred_score, ...]
-    model            : trained XGBRanker; pass None to use existing 'pred_score' column
-    features         : feature columns for model.predict() (ignored when model=None)
-    initial_capital  : starting cash
-    buy_fraction     : top X% of ranked stocks are buy targets
-    hold_fraction    : top Y% of ranked stocks are hold targets (grace band, Y > X)
-    trailing_stop    : sell if drawdown from peak <= this (e.g. -0.10 = -10%)
-    take_profit      : sell if return since buy >= this (e.g. 0.50 = +50%)
-    time_of_rebalance: pandas period alias ('M' = monthly, 'W' = weekly)
-    trend_filter_col : column name for trend filter; stock must have value > 1.0 to buy.
-                       Pass None to disable.
-    settlement_delay : trading days between sell and cash availability (default 3, VN T+2.5)
+    df                  : DataFrame with [date, Symbol, close, volume, pred_score, ...]
+    model               : trained XGBRanker; pass None to use existing 'pred_score' column
+    features            : feature columns for model.predict() (ignored when model=None)
+    initial_capital     : starting cash (VND)
+    buy_fraction        : top X% of ranked stocks are buy targets (e.g. 0.10 = top 10%)
+    time_of_rebalance   : pandas period alias ('M' = monthly, 'W' = weekly)
+    trend_filter_col    : column name for trend filter; stock must have value > 1.0 to buy.
+                          Pass None to disable.
+    settlement_delay    : trading days between sell day and cash/buy availability (VN T+2.5 → use 3)
+    vnindex_df          : optional DataFrame with [date, close] for VNINDEX vol regime filter
+    vol_lookback        : rolling window (days) for realized vol on VNINDEX
+    vol_percentile      : vol regime threshold percentile (0.80 = skip rebalance if top-20% vol)
+    vol_window          : rolling window for vol percentile baseline
+    adtv_lookback       : days to average volume×price for ADTV (default 20)
+    adtv_participation  : max fraction of ADTV your order can represent (default 10%)
     """
 
+    # ------------------------------------------------------------------
+    # Preprocessing
+    # ------------------------------------------------------------------
     df = df.copy()
     df['date'] = pd.to_datetime(df['date'])
+    df = df.sort_values(['Symbol', 'date'])
+
+    # Pre-compute ADTV (average daily traded value) per symbol per date
+    # This is done once before the loop so it's O(n) not O(n * rebalances)
+    if 'adtv' not in df.columns:
+        raise ValueError("df must have pre-computed 'adtv' column from build_features()")
+
     df['year_time'] = df['date'].dt.to_period(time_of_rebalance)
     rebalance_dates = sorted(df.groupby('year_time')['date'].min().unique())
-     # --- VNINDEX VOLATILITY REGIME FILTER ---
-    # regime_ok[date] = True  → normal market, proceed with rebalance
-    # regime_ok[date] = False → high vol, skip rebalance and stay in cash
+
+    # ------------------------------------------------------------------
+    # VNINDEX volatility regime filter
+    # regime_ok[date] = True  → normal market, go ahead
+    # regime_ok[date] = False → high vol, skip this month entirely
+    # ------------------------------------------------------------------
     regime_ok = {}
     if vnindex_df is not None:
         vn = vnindex_df.copy()
@@ -354,7 +378,6 @@ def simulate_portfolio(
         vn['vol_21d']   = vn['daily_ret'].rolling(vol_lookback).std() * (252 ** 0.5)
         vn['vol_p']     = vn['vol_21d'].rolling(vol_window).quantile(vol_percentile)
         vn['is_normal'] = vn['vol_21d'] <= vn['vol_p']
-        # forward-fill so every rebalance date has a value
         vn = vn.reindex(
             pd.date_range(vn.index.min(), vn.index.max(), freq='D'),
             method='ffill'
@@ -362,8 +385,10 @@ def simulate_portfolio(
         for d in rebalance_dates:
             ts = pd.Timestamp(d)
             regime_ok[ts] = bool(vn['is_normal'].get(ts, True))
-    # if vnindex_df is None, all dates are treated as normal
-    # Trading calendar — used to find the exact settlement date in trading days
+
+    # ------------------------------------------------------------------
+    # Trading calendar helpers
+    # ------------------------------------------------------------------
     trading_days = np.sort(df['date'].unique())
 
     def nth_trading_day_after(date, n):
@@ -374,38 +399,40 @@ def simulate_portfolio(
         idx = min(n - 1, len(future) - 1)
         return pd.Timestamp(future[idx])
 
-    def settle_pending(pending_cash, as_of):
+    def settle_pending(pending_cash_list, as_of):
         """Release matured pending cash. Returns (freed_amount, remaining_list)."""
         freed, remaining = 0.0, []
-        for entry in pending_cash:
+        for entry in pending_cash_list:
             if pd.Timestamp(entry['available_date']) <= as_of:
                 freed += entry['amount']
             else:
                 remaining.append(entry)
         return freed, remaining
 
-    cash         = initial_capital
+    # ------------------------------------------------------------------
+    # State
+    # ------------------------------------------------------------------
+    cash         = float(initial_capital)
     pending_cash = []   # [{'amount': float, 'available_date': Timestamp}]
     portfolio    = {}   # symbol -> {'shares', 'buy_price', 'highest_price'}
     history      = []
 
-    # Scheduled buy orders waiting for their settlement date to arrive
-    # [{'execute_date': Timestamp, 'targets': [sym, ...], 'prices': {sym: price}}]
+    # Each entry: {'execute_date': Timestamp, 'targets': [sym,...],
+    #              'prices': {sym: price}, 'n_total_targets': int}
     pending_buys = []
 
+    # ------------------------------------------------------------------
+    # Main loop — one iteration per rebalance date
+    # ------------------------------------------------------------------
     for date in rebalance_dates:
         date = pd.Timestamp(date)
-        day_df_preview = df[df['date'] == date]
-        n_buy = max(1, int(len(day_df_preview) * buy_fraction))
-        # --- REGIME CHECK — skip rebalance on high-vol months ---
+
+        # ── REGIME CHECK ──────────────────────────────────────────────
         if not regime_ok.get(date, True):
-            # Still record NAV so the equity curve has no gaps
-            nav = cash
-            nav += sum(e['amount'] for e in pending_cash)
+            nav = cash + sum(e['amount'] for e in pending_cash)
             day_prices = df[df['date'] == date].set_index('Symbol')['close'].to_dict()
             for sym, pos_data in portfolio.items():
-                if sym in day_prices:
-                    nav += pos_data['shares'] * day_prices[sym]
+                nav += pos_data['shares'] * day_prices.get(sym, 0)
             history.append({
                 'date':               date,
                 'total_value':        nav,
@@ -414,114 +441,117 @@ def simulate_portfolio(
                 'number_of_holdings': len(portfolio),
             })
             print(f"  [REGIME FILTER] {date.strftime('%Y-%m')} — high vol, skipping rebalance")
-            continue   # skip everything below — no sells, no buys
-        # ------------------------------------------------------------------
-        # 0. Execute any deferred buys whose settlement date has arrived
-        # ------------------------------------------------------------------
-        still_pending_buys = []
+            continue
+
+        # ── STEP 0: EXECUTE DEFERRED BUYS whose settlement date has arrived ──
+        # These are buys scheduled from a PREVIOUS month's rebalance.
+        # They execute here, before this month's sell, so the sequence is:
+        #   prev-month sell → T+3 buy (now) → this-month sell → T+3 buy (scheduled)
+        still_pending = []
         for order in pending_buys:
             if order['execute_date'] <= date:
-                # Settle cash that matured by this buy's execution date
+                # Settle cash that has matured by the buy's execution date
                 freed, pending_cash = settle_pending(pending_cash, order['execute_date'])
                 cash += freed
 
-                targets = order['targets']
-
-                # Use settlement-date prices if data is available, else fall back
-                # to prices locked in on the original rebalance (sell) day
+                targets           = order['targets']
                 settlement_day_df = df[df['date'] == order['execute_date']]
                 settlement_prices = settlement_day_df.set_index('Symbol')['close'].to_dict()
                 fallback_prices   = order['prices']
 
-                n_total_targets = n_buy   # the full intended portfolio size
-                n = len(targets)          # just the new names to actually buy
-                if n > 0 and cash > 0:
-                    cash_per_stock = cash / n_total_targets 
-
+                if targets and cash > 0:
+                    # ── PASS 1: determine which stocks will actually execute ──
+                    # Compute a conservative per-stock estimate using the full
+                    # target list as denominator. Any stock that can't afford
+                    # even 1 lot at that estimate is dropped before we fix the
+                    # real denominator in Pass 2.
+                    estimated_per_stock = cash / max(1, len(targets))
+                    executable = []
                     for sym in targets:
                         price = settlement_prices.get(sym) or fallback_prices.get(sym)
-                        if price is None or price <= 0:
+                        if not price or price <= 0:
                             continue
+                        # Can we afford at least 1 VN lot (100 shares)?
+                        if int((estimated_per_stock / (price * 1.001)) // 100) * 100 <= 0:
+                            continue
+                        executable.append((sym, price))
 
+                    # ── PASS 2: buy using the correct denominator ────────────
+                    # Divide cash only among stocks confirmed to execute,
+                    # so no cash is stranded by price-missing or lot-size failures.
+                    remaining_cash = cash
+                    cash_per_stock = remaining_cash / max(1, len(executable))
+
+                    for sym, price in executable:
                         max_shares    = cash_per_stock / (price * 1.001)
                         shares_to_buy = int(max_shares // 100) * 100
 
-                        if shares_to_buy > 0:
-                            buy_value  = shares_to_buy * price
-                            fee        = buy_value * 0.001
-                            total_cost = buy_value + fee
+                        if shares_to_buy <= 0:
+                            continue  # safety net; should rarely fire after Pass 1
 
-                            if sym in portfolio:
-                                # Stock was held through the rebalance — average cost
-                                old          = portfolio[sym]
-                                total_shares = old['shares'] + shares_to_buy
-                                avg_cost     = (old['shares'] * old['buy_price'] + buy_value) / total_shares
-                                portfolio[sym] = {
-                                    'shares':        total_shares,
-                                    'buy_price':     avg_cost,
-                                    'highest_price': max(old['highest_price'], price),
-                                }
-                            else:
-                                portfolio[sym] = {
-                                    'shares':        shares_to_buy,
-                                    'buy_price':     price,
-                                    'highest_price': price,
-                                }
-                            cash -= total_cost
+                        buy_value  = shares_to_buy * price
+                        fee        = buy_value * 0.001
+                        total_cost = buy_value + fee
+
+                        if total_cost > remaining_cash:
+                            continue  # guards against rounding drift on the last stock
+
+                        if sym in portfolio:
+                            old          = portfolio[sym]
+                            total_shares = old['shares'] + shares_to_buy
+                            avg_cost     = (old['shares'] * old['buy_price'] + buy_value) / total_shares
+                            portfolio[sym] = {
+                                'shares':        total_shares,
+                                'buy_price':     avg_cost,
+                                'highest_price': max(old['highest_price'], price),
+                            }
+                        else:
+                            portfolio[sym] = {
+                                'shares':        shares_to_buy,
+                                'buy_price':     price,
+                                'highest_price': price,
+                            }
+                        cash           -= total_cost
+                        remaining_cash -= total_cost
             else:
-                still_pending_buys.append(order)
+                still_pending.append(order)
 
-        pending_buys = still_pending_buys
+        pending_buys = still_pending
 
-        # Settle any remaining cash that matured by today
+        # Settle any remaining cash that has matured by today
         freed, pending_cash = settle_pending(pending_cash, date)
         cash += freed
 
-        # ------------------------------------------------------------------
-        # Get today's market data
-        # ------------------------------------------------------------------
+        # ── GET TODAY'S MARKET DATA ───────────────────────────────────
         day_df = df[df['date'] == date].copy()
         if day_df.empty:
             continue
 
         prices = day_df.set_index('Symbol')['close'].to_dict()
 
-        # ------------------------------------------------------------------
-        # Step 1: PREDICT — score and rank all stocks this morning
-        # ------------------------------------------------------------------
+        # ── STEP 1: PREDICT — score and rank all stocks ───────────────
         if model is not None:
             X_day = day_df[features]
             day_df['pred_score'] = model.predict(X_day)
 
-        day_df = day_df.sort_values(by='pred_score', ascending=False)
+        day_df = day_df.sort_values('pred_score', ascending=False)
 
+        n_buy             = max(1, int(len(day_df) * buy_fraction))
+        target_buy_stocks = day_df.head(n_buy)['Symbol'].tolist()
 
-        target_buy_stocks  = day_df.head(n_buy)['Symbol'].tolist()
-        
-
-        # Update peak prices for trailing stop
+        # Update peak prices for any trailing-stop use downstream
         for sym in portfolio:
             if sym in prices and prices[sym] > portfolio[sym]['highest_price']:
                 portfolio[sym]['highest_price'] = prices[sym]
 
-        # ------------------------------------------------------------------
-        # Step 2: SELL — on rebalance morning at today's price
-        # ------------------------------------------------------------------
-        symbols_to_sell = []
-
-        for sym, pos_data in list(portfolio.items()):
-            if sym not in prices:
-                continue
-
-            current_price      = prices[sym]
-            return_since_buy   = (current_price - pos_data['buy_price']) / pos_data['buy_price']
-            drawdown_from_peak = (current_price - pos_data['highest_price']) / pos_data['highest_price']
-
-            if sym not in target_buy_stocks:        # hard: not in buy targets → sell
-                symbols_to_sell.append(sym)
-
-        # Execute sells — proceeds enter pending_cash, available after T+settlement_delay
+        # ── STEP 2: HARD SELL ─────────────────────────────────────────
+        # Any stock not in target_buy_stocks is sold — no grace band.
         settlement_date = nth_trading_day_after(date, settlement_delay)
+
+        symbols_to_sell = [
+            sym for sym in list(portfolio.keys())
+            if sym in prices and sym not in target_buy_stocks
+        ]
 
         for sym in symbols_to_sell:
             pos           = portfolio.pop(sym)
@@ -534,41 +564,57 @@ def simulate_portfolio(
 
             pending_cash.append({
                 'amount':         net_proceeds,
-                'available_date': settlement_date,
+                'available_date': settlement_date,   # T+3
             })
 
-        # ------------------------------------------------------------------
-        # Step 3: SCHEDULE DEFERRED BUY on settlement_date
-        #         Targets = top N stocks not already in portfolio
-        # ------------------------------------------------------------------
+        # ── STEP 3: SCHEDULE DEFERRED BUY at T+settlement_delay ──────
+        # Only NEW stocks (not already held) that pass BOTH filters:
+        #   (a) trend filter: dist_SMA_100 > 1.0  (stock is above its SMA)
+        #   (b) ADTV filter:  our position size <= adtv_participation * adtv_20d
+        #
+        # Note: cash_per_stock is estimated using current cash + ALL pending cash
+        # (since it will all be settled by buy day). This avoids under-buying.
+        estimated_cash_at_buy = cash + sum(e['amount'] for e in pending_cash)
+        cash_per_stock_est    = estimated_cash_at_buy / n_buy
+
         currently_held = set(portfolio.keys())
         new_targets    = []
+
+        adtv_map = day_df.set_index('Symbol')['adtv'].to_dict() if 'adtv' in day_df.columns else {}
 
         for sym in target_buy_stocks:
             if sym in currently_held:
                 continue
+
+            row = day_df[day_df['Symbol'] == sym]
+            if row.empty:
+                continue
+
+            # (a) Trend filter
             if trend_filter_col and trend_filter_col in day_df.columns:
-                row = day_df[day_df['Symbol'] == sym]
-                if not row.empty and row[trend_filter_col].values[0] > 1.0:
-                    new_targets.append(sym)
-            else:
-                new_targets.append(sym)
+                if row[trend_filter_col].values[0] <= 1.0:
+                    continue
+            if liquidity_filter:
+                # (b) ADTV liquidity filter
+                adtv_val = adtv_map.get(sym, None)
+                if adtv_val and adtv_val > 0:
+                    if cash_per_stock_est > adtv_participation * adtv_val:
+                        continue   # our order is too large relative to this stock's liquidity
+
+            new_targets.append(sym)
 
         if new_targets:
             pending_buys.append({
-                'execute_date': settlement_date,
-                'targets':      new_targets,
-                'prices':       prices,     # locked-in fallback prices from sell day
+                'execute_date':    settlement_date,
+                'targets':         new_targets,
+                'prices':          prices,           # fallback prices from sell day
+                'n_total_targets': n_buy,            # kept for reference / debugging
             })
 
-        # ------------------------------------------------------------------
-        # NAV: free cash + pending cash in transit + holdings mark-to-market
-        # ------------------------------------------------------------------
-        nav = cash
-        nav += sum(e['amount'] for e in pending_cash)
+        # ── NAV SNAPSHOT ──────────────────────────────────────────────
+        nav = cash + sum(e['amount'] for e in pending_cash)
         for sym, pos_data in portfolio.items():
-            if sym in prices:
-                nav += pos_data['shares'] * prices[sym]
+            nav += pos_data['shares'] * prices.get(sym, 0)
 
         history.append({
             'date':               date,
@@ -579,7 +625,6 @@ def simulate_portfolio(
         })
 
     return pd.DataFrame(history)
-
 
 def pretrain_and_save_artifacts(
     df: pd.DataFrame,
@@ -617,7 +662,6 @@ def pretrain_and_save_artifacts(
         initial_train_months=24, 
         test_months=6, 
         gap_days=21,
-        use_mega=False,
         use_gp=False
     )
     
@@ -628,30 +672,27 @@ def pretrain_and_save_artifacts(
         model=None, 
         features=None,
         initial_capital=100000,
-        buy_fraction=0.10,
-
+        buy_fraction=0.20,
         time_of_rebalance='M', 
         trend_filter_col='dist_SMA_100'
     )
-    final_model = xgb.XGBRanker(**base_model())
-    x_train = df[selected_features]
-    y_train=df['target_quintile']
-    qids_train =df['qid']
+
+    final_model = xgb.XGBRanker(**BASE_MODEL_PARAMS)
+    x_train    = df[selected_features]
+    y_train    = df['target_quintile']
+    qids_train = df['qid']
     final_model.fit(
-            x_train, y_train, qid=qids_train, 
-            verbose=False
-        )
+        x_train, y_train, qid=qids_train,
+        verbose=False
+    )
+
     # 3. Save the critical artifacts to Parquet (much faster than CSV)
-    predictions_path = os.path.join(output_dir, "pretrained_predictions.parquet")
+    predictions_path  = os.path.join(output_dir, "pretrained_predictions.parquet")
     equity_curve_path = os.path.join(output_dir, "pretrained_equity_curve.parquet")
-    final_model_path = os.path.join(output_dir,"pretrained_model.json")
-    # We only need to save the columns app.py actually uses to save space!
-    #cols_to_save = ['date', 'Symbol', 'next_1m_ret', 'pred_score', 'pred_quintile'] + selected_features
-    # Ensure we only try to save columns that actually exist in the dataframe
-    #cols_to_save = [c for c in cols_to_save if c in honest_test_df.columns]
-    
+    final_model_path  = os.path.join(output_dir, "pretrained_model.json")
+
     honest_test_df.to_parquet(predictions_path, index=False)
     result.to_parquet(equity_curve_path, index=False)
     final_model.save_model(final_model_path)
     print(f"✅ Success! Artifacts saved to {output_dir}")
-    return predictions_path, equity_curve_path,final_model_path
+    return predictions_path, equity_curve_path, final_model_path
