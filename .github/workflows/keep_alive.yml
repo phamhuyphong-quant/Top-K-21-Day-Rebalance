@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Install Playwright
-        run: pip install playwright && playwright install chromium
+        run: pip install playwright && playwright install --with-deps chromium
 
       - name: Ping with real browser session
         run: |
