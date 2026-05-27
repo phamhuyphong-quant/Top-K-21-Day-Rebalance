@@ -43,8 +43,8 @@
           run: |
             cp kaggle_kernel/kernel.py kaggle_kernel/kernel.py.bak
             sed -i "s|GH_PAT = os.environ.get.*|GH_PAT = '${GH_PAT}'|" kaggle_kernel/kernel.py
-            echo "--- Injected kernel.py (line 4) ---"
-            sed -n '4p' kaggle_kernel/kernel.py
+            echo "--- Injected kernel.py (line 6) ---"
+            sed -n '6p' kaggle_kernel/kernel.py
             kaggle kernels push -p kaggle_kernel/
             mv kaggle_kernel/kernel.py.bak kaggle_kernel/kernel.py
 
