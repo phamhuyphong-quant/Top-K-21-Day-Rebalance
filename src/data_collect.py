@@ -1,5 +1,7 @@
-from vnstock import Listing, Company, Quote
+from vnstock import Reference
+from vnstock.ui import Market
 import pandas as pd
+from datetime import datetime
 import numpy as np
 import os
 import re
@@ -25,32 +27,43 @@ def clean_symbols(symbol_list):
     )
 
 
-def build_vn100(fetching=False):
+def get_tags(fetching=False):
     if fetching:
-        listing = Listing(source="KBS")
-        vn30  = clean_symbols(listing.symbols_by_group("VN30"))
-        vnmid = clean_symbols(listing.symbols_by_group("VNMidCap"))
-        vn100 = sorted(set(vn30 + vnmid))
-        log.info("VN30=%d  VNMID=%d  VN100=%d", len(vn30), len(vnmid), len(vn100))
-        return vn100
+        ref = Reference()
+        return ref.index.members("VNALL")
 
-    return ['ACB', 'ANV', 'BCM', 'BID', 'BMP', 'BSI', 
-            'BSR', 'BVH', 'BWE', 'CII', 'CMG', 'CTD',
-              'CTG', 'CTR', 'CTS', 'DBC', 'DCM', 'DGC',
-                'DGW', 'DIG', 'DPM', 'DSE', 'DXG', 'DXS',
-                  'EIB', 'EVF', 'FPT', 'FRT', 'FTS', 'GAS',
-                  'GEE', 'GEX', 'GMD', 'GVR', 'HAG', 'HCM', 
-                  'HDB', 'HDC', 'HDG', 'HHV', 'HPG', 'HSG', 
-                  'HT1', 'IMP', 'KBC', 'KDC', 'KDH', 'KOS', 
-                  'LPB', 'MBB', 'MSB', 'MSN', 'MWG', 'NAB', 
-                  'NKG', 'NLG', 'NT2', 'NVL', 'OCB', 'PAN', 
-                  'PC1', 'PDR', 'PHR', 'PLX', 'PNJ', 'POW', 
-                  'PVD', 'PVT', 'REE', 'SAB', 'SBT', 'SCS', 
-                  'SHB', 'SIP', 'SJS', 'SSB', 'SSI', 'STB', 
-                  'SZC', 'TCB', 'TCH', 'TPB', 'VCB', 'VCG', 
-                  'VCI', 'VGC', 'VHC', 'VHM', 'VIB', 'VIC', 
-                  'VIX', 'VJC', 'VND', 'VNM', 'VPB', 'VPI', 
-                  'VPL', 'VRE', 'VSC', 'VTP']
+    return [
+    "AAA", "AAM", "ABT", "ACB", "ACC", "ACL", "ADG", "ADP", "ADS", "AGG",
+    "AGR", "ANV", "APG", "APH", "ASM", "ASP", "AST", "BAF", "BCE", "BCM",
+    "BFC", "BIC", "BID", "BKG", "BMC", "BMI", "BMP", "BRC", "BSI", "BSR",
+    "BTP", "BVH", "BWE", "C32", "CCC", "CCL", "CDC", "CHP", "CIG", "CII",
+    "CKG", "CLL", "CMG", "CMX", "CNG", "CRC", "CRE", "CSM", "CSV", "CTD",
+    "CTF", "CTG", "CTI", "CTR", "CTS", "D2D", "DAH", "DBC", "DBD", "DC4",
+    "DCL", "DCM", "DGW", "DHA", "DHC", "DHM", "DIG", "DLG", "DMC", "DPG",
+    "DPM", "DPR", "DRC", "DRL", "DSC", "DSE", "DSN", "DTA", "DVP", "DXG",
+    "DXS", "DXV", "EIB", "ELC", "EVE", "EVF", "EVG", "FCM", "FCN", "FIR",
+    "FIT", "FMC", "FPT", "FRT", "FTS", "GAS", "GDT", "GEE", "GEG", "GEX",
+    "GIL", "GMD", "GSP", "GVR", "HAG", "HAH", "HAP", "HAR", "HAX", "HCD",
+    "HCM", "HDB", "HDC", "HDG", "HHP", "HHS", "HHV", "HID", "HII", "HMC",
+    "HPG", "HPX", "HQC", "HSG", "HSL", "HT1", "HTG", "HTI", "HTN", "HTV",
+    "HUB", "HVH", "ICT", "IDI", "IJC", "ILB", "IMP", "ITC", "ITD", "JVC",
+    "KBC", "KDC", "KDH", "KHG", "KHP", "KMR", "KOS", "KSB", "LAF", "LBM",
+    "LCG", "LGL", "LHG", "LIX", "LPB", "LSS", "MBB", "MCM", "MCP", "MHC",
+    "MIG", "MSB", "MSH", "MSN", "MWG", "NAB", "NAF", "NAV", "NBB", "NCT",
+    "NHA", "NHH", "NKG", "NLG", "NNC", "NO1", "NSC", "NT2", "NTL", "NVL",
+    "OCB", "OGC", "ORS", "PAC", "PAN", "PC1", "PDR", "PET", "PGC", "PHC",
+    "PHR", "PIT", "PLP", "PLX", "PNJ", "POW", "PPC", "PTB", "PTC", "PTL",
+    "PVD", "PVP", "PVT", "QCG", "RAL", "REE", "RYG", "SAB", "SAM", "SAV",
+    "SBG", "SBT", "SCR", "SCS", "SFC", "SFI", "SGN", "SGR", "SGT", "SHA",
+    "SHB", "SHI", "SIP", "SJD", "SJS", "SKG", "SMB", "SSB", "SSI", "ST8",
+    "STB", "STK", "SVD", "SVT", "SZC", "SZL", "TCB", "TCH", "TCI", "TCL",
+    "TCM", "TCO", "TCT", "TDC", "TDG", "TDH", "TDP", "TEG", "THG", "TIP",
+    "TLD", "TLG", "TLH", "TMT", "TN1", "TNH", "TNI", "TNT", "TPB", "TRC",
+    "TSC", "TTA", "TTF", "TV2", "TVB", "TVS", "UIC", "VCA", "VCB", "VCG",
+    "VCI", "VDS", "VFG", "VGC", "VHC", "VHM", "VIB", "VIC", "VIP", "VIX",
+    "VJC", "VND", "VNL", "VNM", "VOS", "VPB", "VPG", "VPH", "VPI", "VPL",
+    "VPS", "VRC", "VRE", "VSC", "VSI", "VTB", "VTO", "VTP", "YBM", "YEG"
+]
 
 
 # ── Data cleaning ─────────────────────────────────────────────────────────────
@@ -92,7 +105,7 @@ def _save(df: pd.DataFrame, file_path: str) -> None:
     df.to_parquet(file_path, index=False)
 
 
-def _fetch_quote(symbol: str, start: str, end: str, source: str) -> pd.DataFrame | None:
+def _fetch_quote(symbol: str, start_d: str, end_d: str) -> pd.DataFrame | None:
     """
     Fetches OHLCV history for a single symbol from the given source.
     Returns a cleaned DataFrame on success, or None if the source fails.
@@ -100,14 +113,15 @@ def _fetch_quote(symbol: str, start: str, end: str, source: str) -> pd.DataFrame
     so the caller can try a fallback source.
     """
     while True:
-        df = Quote(symbol=symbol, source=source).history(
-            start=start,
-            end=end,
-            interval="1D",
-        )
+        df = Market().equity(symbol).ohlcv(start=start_d,end=end_d,
+                                           count = (
+                                        datetime.strptime(end_d, "%Y-%m-%d") -
+                                          datetime.strptime(start_d, "%Y-%m-%d")).days
+                                           
+                                           ,interval='1D')
 
         if df is None or df.empty:
-            log.warning("! %s [%s] — no data returned", symbol, source)
+            log.warning("! %s [%s] — no data returned", symbol)
             return None
 
         df = df.rename(columns={"time": "date"})
@@ -121,7 +135,7 @@ def _fetch_quote(symbol: str, start: str, end: str, source: str) -> pd.DataFrame
         df = clean_ohlcv(df)
 
         if df.empty:
-            log.warning("! %s [%s] — empty after cleaning", symbol, source)
+            log.warning("! %s [%s] — empty after cleaning", symbol)
             return None
 
         return df
@@ -131,15 +145,12 @@ def update_market_data(
     file_path: str,
     symbols: list,
     start_date: str = "2016-01-01",
-    batch_size: int = 5,
-    base_sleep: float = 3.0,
-    sources: list[str] = ("VCI", "KBS"),
+    batch_size: int = 1,
+    base_sleep: float = 7,
     filter_symbols: bool = True,
 ) -> None:
     """
     Fetches full stock history from start_date to today for every symbol.
-    Tries each source in `sources` order; falls back to the next source on
-    any timeout, rate-limit, or other error.
     Existing data is preserved; freshly fetched rows overwrite on (date, Symbol).
     OHLC violations are fixed by ffill-ing the entire candle; volume is untouched.
     No rows are dropped.
@@ -148,7 +159,8 @@ def update_market_data(
     Symbol is no longer in the provided symbols list. Set to False to keep
     all previously stored symbols regardless.
     """
-    today_str = pd.Timestamp.today().normalize().strftime("%Y-%m-%d")
+    today = pd.Timestamp.today().normalize()
+    today_str = today.strftime("%Y-%m-%d")
 
     # Load existing file once
     if os.path.exists(file_path):
@@ -166,53 +178,74 @@ def update_market_data(
                 log.info("Purged %d rows: Symbols no longer in the current list.", removed_count)
 
         log.info("Loaded existing data: %d rows", len(existing_df))
+
+        # Build a lookup: symbol -> latest date already stored
+        latest_dates = existing_df.groupby("Symbol")["date"].max()
     else:
         existing_df = pd.DataFrame()
+        latest_dates = pd.Series(dtype="datetime64[ns]")
 
+    # Last trading day (rolls back to Friday on weekends)
+    # Last completed trading day:
+    # - If market has closed today (after 14:45 ICT), today counts
+    # - Otherwise, roll back to the previous weekday
+    MARKET_CLOSE_HOUR = 14
+    MARKET_CLOSE_MINUTE = 45
+
+    now_ict = pd.Timestamp.now("Asia/Ho_Chi_Minh")
+    market_closed_today = (
+        now_ict.hour > MARKET_CLOSE_HOUR
+        or (now_ict.hour == MARKET_CLOSE_HOUR and now_ict.minute >= MARKET_CLOSE_MINUTE)
+    )
+
+    if market_closed_today and today.weekday() < 5:
+        last_trading_day = today
+    else:
+        # Roll back to the previous weekday (skips weekends)
+        days_back = 1 if today.weekday() > 0 else 3  # Monday rolls back to Friday
+        last_trading_day = today - pd.Timedelta(days=days_back)
     new_data: list[pd.DataFrame] = []
     processed = 0
 
     for symbol in symbols:
+        # Skip if already up to date
+        if symbol in latest_dates.index:
+            last = latest_dates[symbol]
+            if last >= last_trading_day:
+                log.info("⏭ %s — already up to date (%s), skipping", symbol, last.date())
+                continue
+
         df = None
 
-        for source in sources:
-            try:
-                log.info("→ %s fetching from [%s]", symbol, source)
-                df = _fetch_quote(symbol, start_date, today_str, source)
+        try:
+            log.info("→ %s fetching", symbol)
+            df = _fetch_quote(symbol, start_date, today_str)
 
-                if df is not None:
-                    log.info("✓ %s [%s] — %d rows fetched", symbol, source, len(df))
-                    break  # success; no need to try next source
+            if df is not None:
+                log.info("✓ %s — %d rows fetched", symbol, len(df))
+            else:
+                log.warning("! %s — no usable data returned", symbol)
 
-                # Source returned empty — try next source immediately
-                log.warning("! %s [%s] — no usable data, trying next source…", symbol, source)
+        except Exception as exc:
+            msg = str(exc)
+            log.error("✗ %s error: %s", symbol, msg)
 
-            except Exception as exc:
-                msg = str(exc)
-                log.error("✗ %s [%s] error: %s", symbol, source, msg)
-
-                # If it's a rate-limit with an explicit wait time, honour it and
-                # retry the SAME source once before falling back.
-                rate_match = re.search(r"(\d+)\s*(giây|seconds?)", msg, re.IGNORECASE)
-                if rate_match:
-                    wait = int(rate_match.group(1)) + 1
-                    log.info("⏳ Rate limit on [%s] — waiting %ds then retrying…", source, wait)
-                    time.sleep(wait)
-                    try:
-                        df = _fetch_quote(symbol, start_date, today_str, source)
-                        if df is not None:
-                            log.info("✓ %s [%s] — %d rows after retry", symbol, source, len(df))
-                            break
-                    except Exception as retry_exc:
-                        log.error("✗ %s [%s] retry failed: %s", symbol, source, retry_exc)
-
-                # Fall through to next source
-                log.warning("⚠ %s [%s] failed — falling back to next source…", symbol, source)
+            rate_match = re.search(r"(\d+)\s*(giây|seconds?)", msg, re.IGNORECASE)
+            if rate_match:
+                wait = int(rate_match.group(1)) + 1
+                log.info("⏳ Rate limit — waiting %ds then retrying…", wait)
+                time.sleep(wait)
+                try:
+                    df = _fetch_quote(symbol, start_date, today_str)
+                    if df is not None:
+                        log.info("✓ %s — %d rows after retry", symbol, len(df))
+                except Exception as retry_exc:
+                    log.error("✗ %s retry failed: %s", symbol, retry_exc)
 
         if df is not None:
             new_data.append(df)
         else:
-            log.error("✗ %s — all sources exhausted, symbol skipped.", symbol)
+            log.error("✗ %s — fetch failed, symbol skipped.", symbol)
 
         time.sleep(base_sleep)
         processed += 1
@@ -229,7 +262,6 @@ def update_market_data(
         existing_df = _merge_and_dedup(existing_df, new_data)
         _save(existing_df, file_path)
         log.info("💾 Final save — %d total rows", len(existing_df))
-
 
 def _drop_before_last_zero_volume(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -294,45 +326,37 @@ def fetch_indicator_data(
     ind_symbol: str,
     start_date: str,
     file_path: str,
-    sources: list[str] = ("VCI", "KBS"),
 ) -> None:
     """
-    Fetches market index data (e.g. VNINDEX), cleans it, and saves to a Parquet
-    file. Tries each source in `sources` order; falls back on any error.
+    Fetches market index data (e.g. VNINDEX), cleans it, and saves to a Parquet file.
     """
     today_str = pd.Timestamp.today().normalize().strftime("%Y-%m-%d")
 
-    for source in sources:
-        try:
-            log.info("→ %s fetching from [%s]", ind_symbol, source)
-            df = Quote(symbol=ind_symbol, source=source).history(
-                start=start_date, end=today_str, interval="1D"
-            )
+    try:
+        log.info("→ %s fetching", ind_symbol)
+        df = Market().index(ind_symbol).ohlcv(start=start_date, end=today_str, interval="1D",count = 5000)
 
-            if df is None or df.empty:
-                log.warning("! %s [%s] — no data returned, trying next source…", ind_symbol, source)
-                continue
+        if df is None or df.empty:
+            log.error("✗ %s — no data returned.", ind_symbol)
+            return
 
-            df = df.rename(columns={"time": "date"})
-            df["date"] = (
-                pd.to_datetime(df["date"], errors="coerce")
-                .dt.normalize()
-                .dt.tz_localize(None)
-            )
-            df = df.dropna()
+        df = df.rename(columns={"time": "date"})
+        df["date"] = (
+            pd.to_datetime(df["date"], errors="coerce")
+            .dt.normalize()
+            .dt.tz_localize(None)
+        )
+        df = df.dropna()
 
-            if df.empty:
-                log.warning("! %s [%s] — empty after cleaning, trying next source…", ind_symbol, source)
-                continue
+        if df.empty:
+            log.error("✗ %s — empty after cleaning, no data saved.", ind_symbol)
+            return
 
-            _save(df, file_path)
-            log.info("✓ %s [%s] — %d rows saved to %s", ind_symbol, source, len(df), file_path)
-            return  # success
+        _save(df, file_path)
+        log.info("✓ %s — %d rows saved to %s", ind_symbol, len(df), file_path)
 
-        except Exception as exc:
-            log.error("✗ %s [%s] error: %s — trying next source…", ind_symbol, source, exc)
-
-    log.error("✗ %s — all sources exhausted, no data saved.", ind_symbol)
+    except Exception as exc:
+        log.error("✗ %s error: %s — no data saved.", ind_symbol, exc)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -342,12 +366,12 @@ if __name__ == "__main__":
     START_DATE     = "2016-01-01"
 
     log.info("🤖 Starting data collection…")
-
-    vn100_symbols = build_vn100(fetching=True)
-
+    symbols = get_tags()
+    # Symbol list is derived from the unique tickers already in the parquet,
+    # keeping the fetch in sync with stored data without manual hardcoding.
     update_market_data(
         file_path=MARKET_PATH,
-        symbols=vn100_symbols,
+        symbols=symbols,
         start_date=START_DATE,
     )
 
