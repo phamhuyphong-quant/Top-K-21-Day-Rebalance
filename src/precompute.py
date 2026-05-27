@@ -7,7 +7,6 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.features import build_features, target_generating_ranking,seed_everything,build_targets
 from src.evaluation import pretrain_and_save_artifacts
-from src.alpha_mining import WorldQuantAlphas
 from config import final_features
 seed_everything(42)
 def main():
@@ -28,10 +27,6 @@ def main():
     df_raw = df_raw[df_raw["close"] > 0].copy()
     # 2. Process features and targets (matching app.py logic exactly)
     print("⚙️ Building features and targets...")
-    wq = WorldQuantAlphas(df_raw)
-    wq_cols_df = wq.generate_all()
-    for col in wq_cols_df.columns:
-        df_raw[col] = wq_cols_df[col]
     df = build_features(df_raw)
     df = build_targets(df)
     df = target_generating_ranking(df)
