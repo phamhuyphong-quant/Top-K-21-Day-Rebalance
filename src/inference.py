@@ -1,6 +1,8 @@
 import pandas as pd
 import xgboost as xgb
-from src import models as md
+import sys,os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from config import BASE_MODEL_PARAMS
 from src.features import seed_everything
 seed_everything(42)
 def generate_paper_trade_signals(
@@ -58,7 +60,7 @@ def generate_paper_trade_signals(
             X_train = train_df[features]
             y_train = train_df[target_col]
             qid_train = train_df['qid']
-            model = xgb.XGBRanker(**md.base_model())
+            model = xgb.XGBRanker(**BASE_MODEL_PARAMS)
             model.fit(X_train, y_train, qid=qid_train)
         
         X_inference = inference_df[features]
