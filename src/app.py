@@ -13,7 +13,6 @@ import plotly.graph_objects as go
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 # Standardized Absolute Imports
 from src.features import build_features, target_generating_ranking,build_targets
-from src.alpha_mining import WorldQuantAlphas
 from config import final_features
 from src.inference import generate_paper_trade_signals 
 st.set_page_config(page_title="VN100 Backtest Dashboard", layout="wide")
@@ -30,7 +29,8 @@ def _today_vn() -> str:
 def load_data(_date_key: str = None):  
     """
     Fetches raw OHLCV market data from GitHub (or falls back to local file),
-    filters out zero/negative close prices, and enriches with WorldQuant alpha columns.
+    filters out zero/negative close prices. WorldQuant alpha columns are computed
+    inside build_features().
 
     Note: build_features(), build_targets(), and target_generating_ranking() are NOT
     called here — they are applied in the main app body after this function returns.
@@ -43,7 +43,7 @@ def load_data(_date_key: str = None):
     - df: Raw + WQ-enriched DataFrame, ready for build_features().
     """
     try:
-        url = "https://raw.githubusercontent.com/Masterokadanori/Cross_Sectional_Rank_VN100/data-storage/market_data.parquet"
+        url = "https://raw.githubusercontent.com/phamhuyphong-quant/Cross_Sectional_Rank_VN100/data-storage/market_data.parquet"
         headers = {"Authorization": f"token {st.secrets['GITHUB_TOKEN']}"}
         response = requests.get(url, headers=headers)
         if response.status_code == 200:
@@ -64,7 +64,7 @@ def load_pretrained_model(_date_key: str = None):
     Returns an xgb.XGBRanker ready for .predict().
     Falls back to a local file if the remote fetch fails.
     """
-    base_url = "https://raw.githubusercontent.com/Masterokadanori/Cross_Sectional_Rank_VN100/data-storage/"
+    base_url = "https://raw.githubusercontent.com/phamhuyphong-quant/Cross_Sectional_Rank_VN100/data-storage/"
     headers = {"Authorization": f"token {st.secrets['GITHUB_TOKEN']}"}
 
     try:
@@ -96,7 +96,7 @@ def load_pretrained(_date_key: str = None):
     Fetches the precomputed walk-forward predictions and equity curve from the data-storage branch.
     The _date_key argument busts the cache automatically each new VN day.
     """
-    base_url = "https://raw.githubusercontent.com/Masterokadanori/Cross_Sectional_Rank_VN100/data-storage/"
+    base_url = "https://raw.githubusercontent.com/phamhuyphong-quant/Cross_Sectional_Rank_VN100/data-storage/"
     headers = {"Authorization": f"token {st.secrets['GITHUB_TOKEN']}"}
     
     try:
@@ -223,10 +223,7 @@ show_signals_clicked = st.sidebar.button("🎯 Get Today's Signals")
 best_features = final_features
 
 df_raw = load_data(_date_key=_today_vn())
-wq = WorldQuantAlphas(df_raw)
-wq_cols_df = wq.generate_all()
-for col in wq_cols_df.columns:
-    df_raw[col] = wq_cols_df[col]
+# WorldQuant alphas are now generated inside build_features()
 df = build_features(df_raw)
 df = build_targets(df)
 df = target_generating_ranking(df)
