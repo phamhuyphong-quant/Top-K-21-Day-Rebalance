@@ -125,7 +125,7 @@ The dashboard lets you:
 
 ```bash
 # Clone the repository
-git clone https://github.com/Masterokadanori/Cross_Sectional_Rank_VN100.git
+git clone https://github.com/phamhuyphong-quant/Cross_Sectional_Rank_VN100.git
 cd Cross_Sectional_Rank_VN100
 
 # Install dependencies
@@ -156,9 +156,9 @@ pip install -r requirements.txt
 ### 1. Data Collection
 
 ```python
-from src.data_collect import build_vn100, update_market_data
+from src.data_collect import get_tags, update_market_data
 
-symbols = build_vn100()
+symbols = get_tags()
 update_market_data("data/market_data.parquet", symbols)
 ```
 
@@ -364,7 +364,7 @@ Three workflows keep the system running automatically:
 **Phong Phạm Huy**
 
 [![LinkedIn](https://img.shields.io/badge/LinkedIn-0077B5?style=flat&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/phong-phạm-huy-b64331377)
-[![GitHub](https://img.shields.io/badge/GitHub-181717?style=flat&logo=github&logoColor=white)](https://github.com/Masterokadanori)
+[![GitHub](https://img.shields.io/badge/GitHub-181717?style=flat&logo=github&logoColor=white)](https://github.com/phamhuyphong-quant)
 
 ---
 
