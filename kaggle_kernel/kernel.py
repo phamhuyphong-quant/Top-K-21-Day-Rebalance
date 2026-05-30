@@ -13,8 +13,7 @@ os.makedirs('/kaggle/working/repo/data', exist_ok=True)
 os.system("cp /kaggle/working/data-storage/market_data.parquet /kaggle/working/repo/data/market_data.parquet")
 
 # ── 3. Install dependencies ───────────────────────────────────────────────────
-os.system("pip install -q -r /kaggle/working/repo/requirements.txt")
-os.system("pip install -q -r /kaggle/working/repo/requirements.txt huggingface_hub")
+os.system("pip install -q -r /kaggle/working/repo/requirements-dev.txt")
 # ── 4. Run precompute ─────────────────────────────────────────────────────────
 os.chdir('/kaggle/working/repo')
 sys.path.insert(0, '/kaggle/working/repo')
