@@ -354,7 +354,7 @@ Three workflows keep the system running automatically:
 | Workflow | Schedule | Purpose |
 |---|---|---|
 | `daily_update.yml` | Daily (market close) | Fetches new OHLCV data, updates the Parquet store |
-| `precompute_model.yml` | Weekly | Retrains the model and precomputes today's signals |
+| `precompute_model.yml` | Weekly | Runs Kaggle kernel, retrains the model, and uploads precomputed artifacts to Hugging Face
 | `keep_alive.yml` | Periodic | Pings the Streamlit app to prevent cold-start shutdowns |
 
 ---

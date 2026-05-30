@@ -57,69 +57,51 @@ def load_data(_date_key: str = None):
     raw = raw[raw["close"]>0].copy()
     return raw
 
-@st.cache_resource(ttl=3600)  # cache_resource: keeps the XGBoost model object in memory
+@st.cache_resource(ttl=3600)
 def load_pretrained_model(_date_key: str = None):
-    """
-    Fetches the pretrained XGBoost model from the data-storage branch.
-    Returns an xgb.XGBRanker ready for .predict().
-    Falls back to a local file if the remote fetch fails.
-    """
-    base_url = "https://raw.githubusercontent.com/phamhuyphong-quant/Cross_Sectional_Rank_VN100/data-storage/"
-    headers = {"Authorization": f"token {st.secrets['GITHUB_TOKEN']}"}
-
+    import tempfile
+    HF_TOKEN = st.secrets.get("HF_TOKEN", None)
+    headers = {"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {}
+    url = "https://huggingface.co/datasets/PhongHPham/vn_cross_sectional_ranking_data_storage/resolve/main/pretrained_model.json"
     try:
-        model_response = requests.get(base_url + "pretrained_model.json", headers=headers)
-        if model_response.status_code != 200:
-            raise Exception(f"GitHub Error (Model): {model_response.status_code}")
-
-        # XGBoost can load from a file path, so write bytes to a temp file
-        import tempfile
+        response = requests.get(url, headers=headers)
+        if response.status_code != 200:
+            raise Exception(f"HF Error: {response.status_code}")
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
-            tmp.write(model_response.content)
+            tmp.write(response.content)
             tmp_path = tmp.name
-
         model = xgb.XGBRanker()
         model.load_model(tmp_path)
         os.unlink(tmp_path)
         return model
-
     except Exception as e:
         st.warning(f"⚠️ Live fetch of pretrained model failed. Using local artifact. Error: {e}")
         local_path = "data/pretrained/pretrained_model.json"
         model = xgb.XGBRanker()
         model.load_model(local_path)
         return model
-
-@st.cache_data(ttl=3600)  # Same pattern — hourly TTL + date key = daily refresh
+@st.cache_data(ttl=3600)
 def load_pretrained(_date_key: str = None):
-    """
-    Fetches the precomputed walk-forward predictions and equity curve from the data-storage branch.
-    The _date_key argument busts the cache automatically each new VN day.
-    """
-    base_url = "https://raw.githubusercontent.com/phamhuyphong-quant/Cross_Sectional_Rank_VN100/data-storage/"
-    headers = {"Authorization": f"token {st.secrets['GITHUB_TOKEN']}"}
-    
+    HF_TOKEN = st.secrets.get("HF_TOKEN", None)
+    headers = {"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {}
+    base_url = "https://huggingface.co/datasets/PhongHPham/vn_cross_sectional_ranking_data_storage/resolve/main/"
     try:
         pred_response = requests.get(base_url + "pretrained_predictions.parquet", headers=headers)
-        if pred_response.status_code == 200:
-            honest_test_df = pd.read_parquet(io.BytesIO(pred_response.content))
-        else:
-            raise Exception(f"GitHub Error (Predictions): {pred_response.status_code}")
-            
+        if pred_response.status_code != 200:
+            raise Exception(f"HF Error (Predictions): {pred_response.status_code}")
+        honest_test_df = pd.read_parquet(io.BytesIO(pred_response.content))
+
         eq_response = requests.get(base_url + "pretrained_equity_curve.parquet", headers=headers)
-        if eq_response.status_code == 200:
-            result = pd.read_parquet(io.BytesIO(eq_response.content))
-        else:
-            raise Exception(f"GitHub Error (Equity Curve): {eq_response.status_code}")
-            
+        if eq_response.status_code != 200:
+            raise Exception(f"HF Error (Equity Curve): {eq_response.status_code}")
+        result = pd.read_parquet(io.BytesIO(eq_response.content))
+
         return honest_test_df, result
-        
     except Exception as e:
         st.warning(f"⚠️ Live fetch of precomputed models failed. Using local artifacts. Error: {e}")
         honest_test_df = pd.read_parquet("data/pretrained/pretrained_predictions.parquet")
         result = pd.read_parquet("data/pretrained/pretrained_equity_curve.parquet")
         return honest_test_df, result
-
   
 # --- INITIALIZE SESSION STATE ---
 if "messages" not in st.session_state:

@@ -681,7 +681,7 @@ mega_alpha, attention_weights = model(alphas_seq)
 
 **1. Data & Signal Loading**
 - `load_data()` — Loads raw market data from the GitHub-hosted Parquet file on the `data-storage` branch. Cache key includes today's date to bust daily.
-- `load_pretrained()` — Loads pre-computed walk-forward OOS predictions and equity curve from `data/pretrained/` (populated by `precompute_model.yml`).
+- `load_pretrained()` — Loads pre-computed walk-forward OOS predictions and equity curve from Hugging Face (`PhongHPham/vn_cross_sectional_ranking_data_storage`).
 - `display_portfolio_signals_ui()` — Renders the live Buy / Hold / Sell signal table for a user-defined portfolio, calling `inference.generate_paper_trade_signals()` on demand.
 
 **2. Backtest & Analytics Panel**
@@ -779,11 +779,11 @@ get_tags()
                          │
                          ▼
               pretrain_and_save_artifacts()
-              → pretrained_predictions.parquet
-              → pretrained_equity_curve.parquet
-              → pretrained_model.json
-                         │
+              → pretrained_predictions.parquet  ──► Hugging Face Dataset
+              → pretrained_equity_curve.parquet ──► Hugging Face Dataset
+              → pretrained_model.json           ──► Hugging Face Dataset
+                         │ 
                          ▼
                       app.py
-              (Streamlit dashboard — loads artifacts, no retraining)
+               (fetches from HF at runtime, no retraining)
 ```

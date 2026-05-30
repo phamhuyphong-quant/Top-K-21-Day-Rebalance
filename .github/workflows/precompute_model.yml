@@ -40,9 +40,11 @@
             KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
             KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
             GH_PAT: ${{ secrets.GH_PAT }}
+            HF_TOKEN: ${{ secrets.HF_TOKEN }}
           run: |
             cp kaggle_kernel/kernel.py kaggle_kernel/kernel.py.bak
             sed -i "s|GH_PAT = os.environ.get.*|GH_PAT = '${GH_PAT}'|" kaggle_kernel/kernel.py
+            sed -i "s|HF_TOKEN = os.environ.get.*|HF_TOKEN = '${HF_TOKEN}'|" kaggle_kernel/kernel.py
             echo "--- Injected kernel.py (line 6) ---"
             sed -n '6p' kaggle_kernel/kernel.py
             kaggle kernels push -p kaggle_kernel/
@@ -70,29 +72,3 @@
               sleep 60
             done
             echo "Timed out after 60 minutes"; exit 1
-
-        - name: Download kernel outputs
-          env:
-            KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
-            KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
-          run: |
-            mkdir -p /tmp/pretrained_artifacts
-            kaggle kernels output ${{ secrets.KAGGLE_USERNAME }}/precompute-vn100 -p /tmp/pretrained_artifacts/
-
-        - name: Checkout data_storage branch
-          uses: actions/checkout@v4
-          with:
-            ref: data-storage
-            clean: true
-
-        - name: Commit and push artifacts to data_storage/feature
-          run: |
-            cp /tmp/pretrained_artifacts/pretrained_predictions.parquet .
-            cp /tmp/pretrained_artifacts/pretrained_equity_curve.parquet .
-            cp /tmp/pretrained_artifacts/pretrained_model.json .
-
-            git config --local user.email "github-actions[bot]@users.noreply.github.com"
-            git config --local user.name "github-actions[bot]"
-            git add pretrained_predictions.parquet pretrained_equity_curve.parquet pretrained_model.json
-            git commit -m "data: automated precompute update $(date)" || echo "No changes to commit"
-            git push origin data-storage
