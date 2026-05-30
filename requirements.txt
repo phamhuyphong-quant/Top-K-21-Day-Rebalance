@@ -13,3 +13,4 @@ torch
 requests
 scipy
 plotly
+huggingface_hub

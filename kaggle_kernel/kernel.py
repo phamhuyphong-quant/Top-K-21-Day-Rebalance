@@ -14,7 +14,7 @@ os.system("cp /kaggle/working/data-storage/market_data.parquet /kaggle/working/r
 
 # ── 3. Install dependencies ───────────────────────────────────────────────────
 os.system("pip install -q -r /kaggle/working/repo/requirements.txt")
-
+os.system("pip install -q -r /kaggle/working/repo/requirements.txt huggingface_hub")
 # ── 4. Run precompute ─────────────────────────────────────────────────────────
 os.chdir('/kaggle/working/repo')
 sys.path.insert(0, '/kaggle/working/repo')
@@ -39,8 +39,18 @@ pretrain_and_save_artifacts(
     output_dir='/kaggle/working/repo/data/pretrained'
 )
 
-# ── 5. Copy outputs to /kaggle/working so GitHub Actions can download them ────
-os.system("cp /kaggle/working/repo/data/pretrained/pretrained_predictions.parquet /kaggle/working/")
-os.system("cp /kaggle/working/repo/data/pretrained/pretrained_equity_curve.parquet /kaggle/working/")
-os.system("cp /kaggle/working/repo/data/pretrained/pretrained_model.json /kaggle/working/")
-print("✅ Done!")
+# ── 5. Upload outputs to Hugging Face ────────────────────────────────────────
+import os
+from huggingface_hub import HfApi
+
+HF_TOKEN = os.environ.get('HF_TOKEN', '')
+api = HfApi(token=HF_TOKEN)
+
+for fname in ["pretrained_predictions.parquet", "pretrained_equity_curve.parquet", "pretrained_model.json"]:
+    api.upload_file(
+        path_or_fileobj=f"/kaggle/working/repo/data/pretrained/{fname}",
+        path_in_repo=fname,
+        repo_id="PhongHPham/vn_cross_sectional_ranking_data_storage",
+        repo_type="dataset",
+    )
+    print(f"✅ Uploaded {fname} to Hugging Face")
