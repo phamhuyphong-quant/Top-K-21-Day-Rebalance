@@ -10,8 +10,6 @@ import gc
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from src.deep_combiner import AlphaForgeCombiner
-from src.features import seed_everything
-seed_everything(42)
 def test_train_spliter(df, test_start, features):
     df = df.copy()
     

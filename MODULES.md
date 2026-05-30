@@ -114,12 +114,6 @@ Fetches market index data (e.g. `"VNINDEX"`) and saves to a Parquet file. Tries 
 
 ---
 
-#### `seed_everything(seed=42) → None`
-
-Sets random seeds for `random`, `numpy`, and `torch` (including CUDA) to ensure reproducibility across all modules. Called at import time throughout `src/`.
-
----
-
 #### `rsi(df, window_length=14) → DataFrame`
 
 Computes the Relative Strength Index for each symbol using exponential weighted moving averages of gains and losses (Wilder smoothing).
