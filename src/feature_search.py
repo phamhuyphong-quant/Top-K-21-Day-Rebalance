@@ -44,8 +44,6 @@ import traceback
 from typing import Optional
 
 import pandas as pd
-from src.features import seed_everything
-seed_everything(42)
 # ---------------------------------------------------------------------------
 # Feature group definitions (mirrors the functions in features.py)
 # ---------------------------------------------------------------------------

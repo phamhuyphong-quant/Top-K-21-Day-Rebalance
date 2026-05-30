@@ -4,8 +4,6 @@ from scipy.stats import spearmanr
 from sklearn.linear_model import Ridge
 import sys, os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from src.features import seed_everything
-seed_everything(42)
 
 
 def _rolling_rank_ic(factor_series: pd.Series, ret_series: pd.Series, window: int) -> pd.Series:

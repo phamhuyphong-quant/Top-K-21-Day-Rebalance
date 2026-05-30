@@ -1,22 +1,10 @@
 import pandas as pd
 import numpy as np
-import torch
-import random
 import os
 import logging
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from src.alpha_mining import WorldQuantAlphas
-def seed_everything(seed=42):
-    random.seed(seed)
-    os.environ['PYTHONHASHSEED'] = str(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)  # If using PyTorch
-    torch.cuda.manual_seed(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-
-seed_everything(42)
 # In WorldQuantAlphas or features.py
 def rsi(df, window_length=14):
     """

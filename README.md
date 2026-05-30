@@ -139,7 +139,6 @@ pip install -r requirements.txt
 | `vnstock` | Vietnamese market data (VCI source) |
 | `xgboost` | LambdaRank model |
 | `gplearn` | Symbolic regression for GP alpha mining |
-| `torch` | LSTM sequence architecture (experimental) |
 | `streamlit` | Interactive dashboard |
 | `pandas`, `numpy` | Data processing |
 | `optuna` | Hyperparameter optimisation |

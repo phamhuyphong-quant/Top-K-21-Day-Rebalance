@@ -197,7 +197,16 @@ st.sidebar.header("Strategy Settings")
 
 
 user_portfolio_input = st.sidebar.text_input("Enter your current portfolio (comma separated):", "VNM, FPT, HPG, XYZ")
-current_portfolio = [sym.strip().upper() for sym in user_portfolio_input.split(",") if sym.strip()] 
+current_portfolio = [sym.strip().upper() for sym in user_portfolio_input.split(",") if sym.strip()]
+
+buy_n = st.sidebar.number_input(
+    "Number of stocks to buy (Top N):",
+    min_value=1,
+    max_value=100,
+    value=30,
+    step=1,
+    help="The model will target the top N ranked stocks for new entries. Existing positions are held as long as they remain within this top N."
+)
 
 # 1. Add the Button right under the input
 show_signals_clicked = st.sidebar.button("🎯 Get Today's Signals")
@@ -224,6 +233,7 @@ if show_signals_clicked:
                     current_portfolio=current_portfolio,
                     features=best_features,
                     model=pretrained_model,          # ← use preloaded model, no retraining
+                    buy_n=buy_n,
                     trend_filter_col='dist_SMA_100',
                     target_col='target_quintile'
                 )
@@ -282,9 +292,9 @@ fig1.update_layout(
 )
 st.plotly_chart(fig1, use_container_width=True)
 
-final_nav = result.iloc[-1]['total_value']
-st.metric("Final Portfolio Value", f"{final_nav:,.2f} VND",
-          delta=f"{(final_nav-10000)/100:.2f}% Total ROI")
+final_nav = result.iloc[-1]['total_value']/1000 #In million VND
+st.metric("Final Portfolio Value", f"{final_nav:,.3f} million VND",
+          delta=f"{(final_nav-100)/100*100:.2f}% Total ROI")
 
 st.caption("""
 **How to read this:** The curve shows cumulative portfolio value over the full OOS test period.
@@ -370,48 +380,7 @@ translate into real return differences*.
 
 with st.spinner("Computing feature influence and ranking diagnostics..."):
 
-    # --- 1. FEATURE INFLUENCE VIA INFORMATION COEFFICIENT ---
-    st.markdown("#### 📊 Feature Influence (Information Coefficient)")
-    st.markdown("""
-    The **Information Coefficient (IC)** measures the Spearman rank correlation between each feature
-    and actual next-month returns across all OOS test dates.
-
-    - **Positive IC (green):** Higher feature values tend to predict outperformance
-    - **Negative IC (red):** Higher feature values tend to predict underperformance
-    - **IC near 0:** Feature has little predictive signal on its own
-
-    Even small IC magnitudes (0.02–0.05) can be meaningful in a cross-sectional setting when combined
-    across many stocks and many time periods.
-    """)
-    st.caption("IC = Spearman rank correlation between each feature and actual next-month return, computed on OOS data only.")
-
-    ic_scores = {}
-    for feat in selected_features:
-        valid = honest_test_df[[feat, 'next_1m_ret']].dropna()
-        if len(valid) > 10:
-            ic_scores[feat] = valid[feat].corr(valid['next_1m_ret'], method='spearman')
-
-    ic_series = pd.Series(ic_scores).sort_values()
-    colors = ['#d62728' if v < 0 else '#2ca02c' for v in ic_series.values]
-
-    fig_ic = go.Figure()
-    fig_ic.add_trace(go.Bar(
-        x=ic_series.values,
-        y=ic_series.index,
-        orientation='h',
-        marker=dict(
-            color=colors,
-            line=dict(color='rgba(255,255,255,0)', width=1.5)
-        ),
-        hovertemplate='<b>%{y}</b><br>IC Score: %{x:.4f}<extra></extra>'
-    ))
-    fig_ic.update_layout(
-        title='Feature Influence: Information Coefficient (Spearman)',
-        xaxis=dict(title='IC Score', zeroline=True, zerolinecolor='black', zerolinewidth=1),
-        hovermode='y',
-        height=420,
-    )
-    st.plotly_chart(fig_ic, use_container_width=True)
+    
 
     # --- 2. QUINTILE MONOTONICITY CHART ---
     st.markdown("#### 📈 Predicted Quintile vs Actual Return")

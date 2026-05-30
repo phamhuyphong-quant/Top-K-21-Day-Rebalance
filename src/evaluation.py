@@ -6,9 +6,7 @@ import xgboost as xgb
 import numpy as np
 from scipy.stats import spearmanr
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from src.features import seed_everything
 from config import BASE_MODEL_PARAMS
-seed_everything(42)
 from src.models import walk_forward_cv
 def plot_feature_importances(model, features):
     importances = pd.Series(model.feature_importances_, index=features).sort_values()
@@ -690,7 +688,8 @@ def pretrain_and_save_artifacts(
     predictions_path  = os.path.join(output_dir, "pretrained_predictions.parquet")
     equity_curve_path = os.path.join(output_dir, "pretrained_equity_curve.parquet")
     final_model_path  = os.path.join(output_dir, "pretrained_model.json")
-
+    keep_cols = ['date', 'Symbol', 'pred_score', 'pred_quintile', 'target_quintile', 'next_1m_ret']
+    honest_test_df = honest_test_df[[c for c in keep_cols if c in honest_test_df.columns]]
     honest_test_df.to_parquet(predictions_path, index=False)
     result.to_parquet(equity_curve_path, index=False)
     final_model.save_model(final_model_path)

@@ -3,15 +3,13 @@ import xgboost as xgb
 import sys,os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from config import BASE_MODEL_PARAMS
-from src.features import seed_everything
-seed_everything(42)
 def generate_paper_trade_signals(
     df: pd.DataFrame, 
     current_portfolio: list, 
     features: list, 
     use_mega: bool = False, 
     model=None,
-    buy_n: int = 10,  
+    buy_n: int = 30,  
     trend_filter_col: str = 'dist_SMA_100',
     trend_filter_threshold: float = 1.0,
     target_col: str = 'target_quintile'

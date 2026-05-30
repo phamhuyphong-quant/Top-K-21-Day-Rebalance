@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from gplearn.genetic import SymbolicTransformer
+
 from scipy.stats import spearmanr
 # --- CÁC TOÁN TỬ WORLDQUANT CƠ BẢN ---
 # --- WORLDQUANT BASE OPERATORS ---

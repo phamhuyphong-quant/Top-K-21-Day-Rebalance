@@ -5,10 +5,9 @@ import pandas as pd
 # Add the project root to the Python path so we can cleanly import from src/
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.features import build_features, target_generating_ranking,seed_everything,build_targets
+from src.features import build_features, target_generating_ranking,build_targets
 from src.evaluation import pretrain_and_save_artifacts
 from config import final_features
-seed_everything(42)
 def main():
     import random
     import numpy as np

@@ -5,11 +5,8 @@ vnstock
 xgboost
 pyarrow
 scikit-learn
-optuna
 streamlit
 google-genai
-gplearn
-torch
 requests
 scipy
 plotly
