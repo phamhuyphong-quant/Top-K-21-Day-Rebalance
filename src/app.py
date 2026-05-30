@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import xgboost as xgb
-import matplotlib.pyplot as plt
 import os
 from google import genai
 from google.genai import types
@@ -10,12 +9,7 @@ import requests
 import io
 import plotly.graph_objects as go
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-# Standardized Absolute Imports
-from src.features import build_features, target_generating_ranking,build_targets
-from config import final_features
-from src.inference import generate_paper_trade_signals 
-st.set_page_config(page_title="VN100 Backtest Dashboard", layout="wide")
+st.set_page_config(page_title="VN Backtest Dashboard", layout="wide")
 
 
 import datetime
@@ -25,61 +19,7 @@ def _today_vn() -> str:
     Used as a cache-buster so data is always fresh after midnight VN time."""
     return (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=7)).strftime("%Y-%m-%d")
 
-@st.cache_data(ttl=3600)
-def load_data(_date_key: str = None):  
-    """
-    Fetches raw OHLCV market data from GitHub (or falls back to local file),
-    filters out zero/negative close prices. WorldQuant alpha columns are computed
-    inside build_features().
 
-    Note: build_features(), build_targets(), and target_generating_ranking() are NOT
-    called here — they are applied in the main app body after this function returns.
-
-    Parameters:
-    - _date_key: Cache-busting key (pass today's VN date string). The leading
-                underscore tells Streamlit not to hash this argument.
-
-    Returns:
-    - df: Raw + WQ-enriched DataFrame, ready for build_features().
-    """
-    try:
-        url = "https://raw.githubusercontent.com/phamhuyphong-quant/Cross_Sectional_Rank_VN100/data-storage/market_data.parquet"
-        headers = {"Authorization": f"token {st.secrets['GITHUB_TOKEN']}"}
-        response = requests.get(url, headers=headers)
-        if response.status_code == 200:
-            raw = pd.read_parquet(io.BytesIO(response.content))
-        else:
-            raise Exception(f"GitHub Error {response.status_code}: {response.text}")
-    except Exception as e:
-        st.warning(f"⚠️ Live fetch failed. Using local seed data. Error: {e}")
-        raw = pd.read_parquet("data/market_data.parquet")
-
-    raw = raw[raw["close"]>0].copy()
-    return raw
-
-@st.cache_resource(ttl=3600)
-def load_pretrained_model(_date_key: str = None):
-    import tempfile
-    HF_TOKEN = st.secrets.get("HF_TOKEN", None)
-    headers = {"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {}
-    url = "https://huggingface.co/datasets/PhongHPham/vn_cross_sectional_ranking_data_storage/resolve/main/pretrained_model.json"
-    try:
-        response = requests.get(url, headers=headers)
-        if response.status_code != 200:
-            raise Exception(f"HF Error: {response.status_code}")
-        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
-            tmp.write(response.content)
-            tmp_path = tmp.name
-        model = xgb.XGBRanker()
-        model.load_model(tmp_path)
-        os.unlink(tmp_path)
-        return model
-    except Exception as e:
-        st.warning(f"⚠️ Live fetch of pretrained model failed. Using local artifact. Error: {e}")
-        local_path = "data/pretrained/pretrained_model.json"
-        model = xgb.XGBRanker()
-        model.load_model(local_path)
-        return model
 @st.cache_data(ttl=3600)
 def load_pretrained(_date_key: str = None):
     HF_TOKEN = st.secrets.get("HF_TOKEN", None)
@@ -102,20 +42,32 @@ def load_pretrained(_date_key: str = None):
         honest_test_df = pd.read_parquet("data/pretrained/pretrained_predictions.parquet")
         result = pd.read_parquet("data/pretrained/pretrained_equity_curve.parquet")
         return honest_test_df, result
-  
+@st.cache_data(ttl=3600)
+def load_today_signals(_date_key: str = None):
+    HF_TOKEN = st.secrets.get("HF_TOKEN", None)
+    headers = {"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {}
+    base_url = "https://huggingface.co/datasets/PhongHPham/vn_cross_sectional_ranking_data_storage/resolve/main/"
+    try:
+        response = requests.get(base_url + "today_signals.parquet", headers=headers)
+        if response.status_code != 200:
+            raise Exception(f"HF Error: {response.status_code}")
+        return pd.read_parquet(io.BytesIO(response.content))
+    except Exception as e:
+        st.warning(f"⚠️ Could not load today's signals: {e}")
+        return None
 # --- INITIALIZE SESSION STATE ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
-if "chat_input_key" not in st.session_state:
-    st.session_state.chat_input_key = ""
+if "input_counter" not in st.session_state:
+    st.session_state.input_counter = 0
 if "awaiting_response" not in st.session_state:
     st.session_state.awaiting_response = False
 
-st.title("📈 VN100 Cross-Sectional Ranking Dashboard")
+st.title("📈 VN300 Cross-Sectional Ranking Dashboard")
 
 st.markdown("""
-This dashboard presents an **XGBoost LambdaRank pipeline** that cross-sectionally ranks all 100 stocks
-in the VN100 universe by predicted relative forward returns, and generates actionable paper-trading signals.
+This dashboard presents an **XGBoost LambdaRank pipeline** that cross-sectionally ranks all 300 stocks
+in the VN300 universe by predicted relative forward returns, and generates actionable paper-trading signals.
 All backtest results shown are **fully out-of-sample**, produced via walk-forward cross-validation across
 12 folds from 2020 to 2026 — no look-ahead, no data snooping.
 
@@ -190,8 +142,6 @@ with st.expander("🧠 How does this system work? (click to expand)", expanded=F
     All results shown below are **fully out-of-sample (OOS)** — the model never saw the test data during training.
     """)
 
-DATA_PATH = "data/market_data.parquet"
-
 # --- SIDEBAR CONFIGURATION ---
 st.sidebar.header("Strategy Settings")
 
@@ -211,46 +161,38 @@ buy_n = st.sidebar.number_input(
 # 1. Add the Button right under the input
 show_signals_clicked = st.sidebar.button("🎯 Get Today's Signals")
 
-best_features = final_features
-
-df_raw = load_data(_date_key=_today_vn())
-# WorldQuant alphas are now generated inside build_features()
-df = build_features(df_raw)
-df = build_targets(df)
-df = target_generating_ranking(df)
-
-# Load pretrained model once at startup (cached; no retraining)
-pretrained_model = load_pretrained_model(_date_key=_today_vn())
 
 # 2. If the button is clicked, generate and display right below it in the sidebar
 if show_signals_clicked:
     with st.sidebar:
         st.divider()
-        with st.spinner("Calculating signals..."):
-            try:
-                buys, holds, sells, non_vn100, ranks = generate_paper_trade_signals(
-                    df=df,
-                    current_portfolio=current_portfolio,
-                    features=best_features,
-                    model=pretrained_model,          # ← use preloaded model, no retraining
-                    buy_n=buy_n,
-                    trend_filter_col='dist_SMA_100',
-                    target_col='target_quintile'
-                )
-                
-                # Stack them vertically so they fit nicely in the sidebar
-                st.success(f"🟢 **BUY ({len(buys)})**\n\n{', '.join(buys) if buys else 'None'}")
-                st.info(f"🔵 **HOLD ({len(holds)})**\n\n{', '.join(holds) if holds else 'None'}")
-                st.warning(f"🟠 **SELL ({len(sells)})**\n\n{', '.join(sells) if sells else 'None'}")
-                
-                if non_vn100:
-                    st.error(f"🔴 **NOT VN100 ({len(non_vn100)})**\n\n{', '.join(non_vn100)}")
-                
-            except Exception as e:
-                st.error(f"Could not generate signals: {e}")
+        with st.spinner("Loading today's signals..."):
+            ranked_today = load_today_signals(_date_key=_today_vn())
+            if ranked_today is not None:
+                rank_dict = dict(zip(ranked_today['Symbol'], ranked_today['rank']))
+                current_universe = set(ranked_today['Symbol'])
+
+                sell_list, hold_list, buy_list, not_available_list = [], [], [], []
+
+                for sym in current_portfolio:
+                    if sym not in current_universe:
+                        not_available_list.append(sym)
+                    elif rank_dict.get(sym, 9999) > buy_n:
+                        sell_list.append(sym)
+                    else:
+                        hold_list.append(sym)
+
+                top_candidates = ranked_today.nsmallest(int(buy_n), 'rank')['Symbol'].tolist()
+                for sym in top_candidates:
+                    if sym not in current_portfolio:
+                        buy_list.append(sym)
+
+                st.success(f"🟢 **BUY ({len(buy_list)})**\n\n{', '.join(buy_list) if buy_list else 'None'}")
+                st.info(f"🔵 **HOLD ({len(hold_list)})**\n\n{', '.join(hold_list) if hold_list else 'None'}")
+                st.warning(f"🟠 **SELL ({len(sell_list)})**\n\n{', '.join(sell_list) if sell_list else 'None'}")
+                if not_available_list:
+                    st.error(f"🔴 **NOT AVAILABLE ({len(not_available_list)})**\n\n{', '.join(not_available_list)}")
         st.divider()
-use_mega_alpha = False
-selected_features = best_features
 
 # --- MAIN EXECUTION: load precomputed artifacts immediately on page load ---
 with st.spinner("Loading precomputed model artifacts..."):
@@ -292,9 +234,13 @@ fig1.update_layout(
 )
 st.plotly_chart(fig1, use_container_width=True)
 
-final_nav = result.iloc[-1]['total_value']/1000 #In million VND
-st.metric("Final Portfolio Value", f"{final_nav:,.3f} million VND",
-          delta=f"{(final_nav-100)/100*100:.2f}% Total ROI")
+initial_value = result.iloc[0]['total_value']
+final_value = result.iloc[-1]['total_value']
+final_value= final_value / 1_000  # In million VND
+initial_value = initial_value /1_000 # In million VND
+roi = (final_value - initial_value) / initial_value * 100
+st.metric("Final Portfolio Value", f"{final_value:,.3f} million VND",
+          delta=f"{roi:.2f}% Total ROI")
 
 st.caption("""
 **How to read this:** The curve shows cumulative portfolio value over the full OOS test period.
@@ -441,23 +387,24 @@ with st.spinner("Computing feature influence and ranking diagnostics..."):
             height=420,
         )
         st.plotly_chart(fig_q, use_container_width=True)
-            # --- 3. ALPHA GENERATION METRICS ---
+
+    # --- 3. ALPHA GENERATION METRICS ---
     st.divider()
     st.subheader("🎯 Alpha Generation Summary")
     st.markdown("""
     These three metrics summarise the model's practical edge as a stock picker.
-    All figures are computed on the **top 20% of stocks** ranked by the model each day, vs. the full VN100 universe.
+    All figures are computed on the **top 20% of stocks** ranked by the model each day, vs. the full VN universe.
 
     - **Hit Rate** — What fraction of the model's top picks actually had a positive return that month?
       A fair coin would give ~50%; anything consistently above that is a real edge.
     - **Avg Return** — The mean monthly log return across all top-20% picks over the OOS period.
     - **Lift over Market** — How much better did the top picks do compared to just holding everything?
-      Even a small positive lift, applied consistently across 100 stocks, compounds significantly over time.
+      Even a small positive lift, applied consistently across 300 stocks, compounds significantly over time.
     """)
 
     top_q = honest_test_df.groupby('date', group_keys=False).apply(
-        lambda g: g[g['pred_score'] >= g['pred_score'].quantile(0.8)], include_groups=False
-    )
+        lambda g: g[g['pred_score'] >= g['pred_score'].quantile(0.8)]
+    ).reset_index(drop=True)
     all_ret   = honest_test_df['next_1m_ret'].dropna()
     top_ret   = top_q['next_1m_ret'].dropna()
 
@@ -473,7 +420,7 @@ with st.spinner("Computing feature influence and ranking diagnostics..."):
 
     st.caption("""
     **Note on lift magnitude:** Even a sub-1% monthly lift may look modest in isolation, but in a
-    cross-sectional strategy applied consistently across 100 stocks, small edges compound significantly
+    cross-sectional strategy applied consistently across 300 stocks, small edges compound significantly
     over time. The NDCG scores above 0.83 confirm the model reliably preserves ranking order
     across a wide range of market conditions.
     """)
@@ -492,7 +439,7 @@ except KeyError:
 
 SYSTEM_PROMPT = """
 You are a senior quantitative analyst and the creator of this specific Streamlit dashboard.
-Your job is to answer user questions about the VN100 Cross-Sectional Ranking model.
+Your job is to answer user questions about the VN Cross-Sectional Ranking model.
 
 The model is an XGBoost LambdaRank ranker (rank:ndcg objective) trained via walk-forward
 cross-validation across 12 folds covering 2020–2026, with a mandatory 21-day gap between
@@ -514,12 +461,13 @@ def process_chat():
     if st.session_state.awaiting_response:
         return
 
-    user_input = st.session_state.chat_input_key
+    input_key = f"chat_input_{st.session_state.input_counter}"
+    user_input = st.session_state.get(input_key, "")
     if user_input.strip():
         # 1. Add User Message to UI
         st.session_state.messages.append({"role": "user", "content": user_input})
-        # 2. Clear input
-        st.session_state.chat_input_key = ""
+        # 2. Increment counter to force widget reset (clears the text input)
+        st.session_state.input_counter += 1
         # 3. Lock the UI by setting the 'thinking' flag
         st.session_state.awaiting_response = True
 
@@ -621,19 +569,20 @@ with st.popover("🤖", use_container_width=False):
     chat_container = st.container(height=340, border=False)
     with chat_container:
         for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
+            display_role = "assistant" if message["role"] == "model" else message["role"]
+            with st.chat_message(display_role):
                 st.markdown(message["content"])
         
         # UI updates to visually show the AI is processing
         if st.session_state.awaiting_response:
-            with st.chat_message("model"):
+            with st.chat_message("assistant"):
                 st.markdown("⏳ *AI is thinking...*")
                 
     # Render Chat Input
     cols = st.columns([5, 1])
     with cols[0]:
         # REMOVED the 'disabled' argument so you can type freely while it thinks
-        st.text_input("Message", key="chat_input_key", label_visibility="collapsed", placeholder="Aa", on_change=process_chat)
+        st.text_input("Message", key=f"chat_input_{st.session_state.input_counter}", label_visibility="collapsed", placeholder="Aa", on_change=process_chat)
     with cols[1]:
         # KEPT the 'disabled' argument so the send button stays grayed out
         st.button("➤", on_click=process_chat, disabled=st.session_state.awaiting_response)

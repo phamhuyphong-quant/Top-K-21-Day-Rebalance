@@ -285,7 +285,7 @@ wq = WorldQuantAlphas(df)  # df must have: Symbol, date, open, high, low, close,
 
 Computes all 14 alphas, replaces `inf`/`NaN` with `NaN`, and returns a DataFrame with columns `WQ_Alpha_001` through `WQ_Alpha_202`. This is called **automatically inside `build_features()`** — do not invoke it manually before calling `build_features()`.
 
-> **Note:** Of the 14 alphas, `WQ_Alpha_024` and `WQ_Alpha_028` appear in `config.final_features` (the production feature set). The full set is available in `config.candidate_features` for feature search experiments.
+> **Note:** Of the 14 alphas, `WQ_Alpha_024` and `WQ_Alpha_028` appear in `config.final_features` (the production feature set). The full set of 14 is available in `config.candidate_features` for feature search experiments.
 
 ---
 
@@ -316,7 +316,7 @@ Features are organised into seven named groups:
 | `moving_average` | `dist_SMA_9/21/50/100/200`, `dist_EMA_9/21/50/100/200` |
 | `volume` | `volume_surge_monthly/weekly`, `obv_trend`, `price_vol_divergence` |
 | `rsi` | `RSI_14` |
-| `wq_features` | `WQ_Alpha_024`, `WQ_Alpha_028`, and other WQ alphas in `candidate_features` |
+| `wq_features` | `WQ_Alpha_012`, `WQ_Alpha_024`, `WQ_Alpha_028`, `WQ_Alpha_053`, `WQ_Alpha_060` |
 | `price_structure` | `dist_52w_high`, `log_ret_skip1m` |
 
 With 7 groups, the search evaluates up to 127 non-empty combinations — feasible to run on Kaggle.
@@ -376,13 +376,13 @@ print(best_roi_row['combo_name'], best_roi_row['roi_%'])
 
 ## `models.py`
 
-**Purpose:** Model training, walk-forward cross-validation, Optuna hyperparameter search, and the AlphaForge (GP + LSTM) training loop.
+**Purpose:** Model training, walk-forward cross-validation, Optuna hyperparameter search, and the AlphaForge training loop.
 
 ### Functions
 
 ---
 
-#### `walk_forward_cv(df, features, model_params=None, initial_train_months=12, test_months=6, gap_days=21, model='basic', use_gp=False, liquidity_filter=False) → DataFrame`
+#### `walk_forward_cv(df, features, model_params=None, initial_train_months=12, test_months=6, gap_days=21, model='xgboost', use_gp=False, liquidity_filter=False) → DataFrame`
 
 The core training and evaluation function. Simulates live deployment by rolling through time:
 
@@ -399,11 +399,11 @@ At each fold, the model is fitted on the training slice and predictions are stor
 | `initial_train_months` | `12` | Months of data required before first test fold. **All published results use `24` — always pass this explicitly.** |
 | `test_months` | `6` | Length of each test window |
 | `gap_days` | `21` | Trading-day gap between train end and test start |
-| `model` | `'basic'` | `'basic'` for XGBoost only; `'alphaforge'` for GP + LSTM-Attention |
-| `use_gp` | `False` | Enable GP alpha mining (used automatically when `model='alphaforge'`) |
+| `model` | `'xgboost'` | `'xgboost'` for XGBoost LambdaRank only; `'alphaforge'` for the AlphaForge dynamic factor combiner |
+| `use_gp` | `False` | Enable GP alpha mining (adds `gplearn`-evolved alpha columns before training) |
 | `liquidity_filter` | `False` | Filter out illiquid stocks before training |
 
-> **Note:** The function default of `initial_train_months=12` is a code fallback only. Always pass `initial_train_months=24` to reproduce the reported backtest results (87-month period, 15 folds).
+> **Note:** The function default of `initial_train_months=12` is a code fallback only. Always pass `initial_train_months=24` to reproduce the reported backtest results (63-month period, multiple folds).
 
 **Returns:** Concatenated OOS predictions DataFrame with a `pred_score` column. Pass directly to `simulate_portfolio()` or `compute_top_quantile_win_rate()`.
 
@@ -417,9 +417,16 @@ Uses Optuna to find the best XGBoost hyperparameters. Trains on data up to 2023-
 
 ---
 
-#### `train_mega_combiner(train_df, alpha_cols, epochs=5) → DynamicAlphaCombiner`
+#### `build_mega_combiner(ic_window=40, ic_threshold=0.02, icir_threshold=0.2, max_active_factors=13, ridge_alpha=1.0) → AlphaForgeCombiner`
 
-Trains the LSTM-Attention model (see `deep_combiner.py`) on the training slice to produce a `Mega_Alpha` scalar from a set of alpha signals. Uses Adam optimiser and MSE loss against `risk_adj_ret`. Called internally by the AlphaForge path in `walk_forward_cv`.
+Constructs an `AlphaForgeCombiner` instance (AlphaForge Algorithm 2). No training happens here — the combiner recomputes dynamic weights at every `fit_and_predict()` call using rolling RankIC/ICIR gating and Ridge regression. Called internally by the `'alphaforge'` path in `walk_forward_cv`.
+
+**Parameters:**
+- `ic_window` — Number of past dates used to compute rolling RankIC (default `40`)
+- `ic_threshold` — Minimum |RankIC| for a factor to remain active (default `0.02`)
+- `icir_threshold` — Minimum |ICIR| for a factor to remain active (default `0.2`)
+- `max_active_factors` — Top-N active factors passed to Ridge (default `13`)
+- `ridge_alpha` — Ridge regularisation strength (default `1.0`)
 
 ---
 
@@ -506,7 +513,7 @@ Plots average forward return by predicted quintile (1 = worst to 5 = best). A we
 
 #### `plot_equity_curves(*results, labels=None, normalize=False) → None`
 
-Plots one or more equity curves on the same chart. Pass `normalize=True` to show cumulative return (%) normalised to a common start — useful for comparing Basic vs AlphaForge.
+Plots one or more equity curves on the same chart. Pass `normalize=True` to show cumulative return (%) normalised to a common start — useful for comparing XGBoost vs AlphaForge.
 
 **Example:**
 ```python
@@ -517,13 +524,13 @@ ev.plot_equity_curves(result_basic, result_alphaforge,
 
 ---
 
-#### `simulate_portfolio(df, model, features, initial_capital, buy_fraction, time_of_rebalance, trend_filter_col, settlement_delay, vnindex_df, vol_lookback, vol_percentile, vol_window) → DataFrame`
+#### `simulate_portfolio(df, model, features, initial_capital, buy_fraction, time_of_rebalance, trend_filter_col, settlement_delay, vnindex_df, liquidity_filter, vol_lookback, vol_percentile, vol_window, adtv_lookback, adtv_participation) → DataFrame`
 
 Simulates a realistic portfolio with VN-market timing conventions.
 
 **Execution model:**
-1. **Rebalance day (day 0):** Model scores stocks → ranks universe → sells exiting positions at today's price; sell proceeds enter `pending_cash` (available after T+`settlement_delay`)
-2. **Settlement (day +3):** Pending cash becomes available → new buy orders execute at settlement-day prices
+1. **Rebalance day (day 0):** Model scores stocks → ranks universe → hard-sells every stock NOT in top-N at today's price; sell proceeds enter `pending_cash` (available after T+`settlement_delay`)
+2. **Settlement (day +3):** Pending cash becomes available → new buy orders execute at settlement-day prices, split equally across all buy targets
 
 This correctly models VN T+3 settlement — you cannot buy with money from the same-day sell.
 
@@ -532,17 +539,20 @@ This correctly models VN T+3 settlement — you cannot buy with money from the s
 | Parameter | Default | Description |
 |---|---|---|
 | `model` | — | Trained XGBRanker; pass `None` to use existing `pred_score` column |
+| `initial_capital` | `10_000_000` | Starting capital |
 | `buy_fraction` | `0.05` | Top X% of ranked stocks are buy targets |
 | `time_of_rebalance` | `'M'` | Pandas period alias: `'M'` = monthly, `'W'` = weekly |
 | `trend_filter_col` | `'dist_SMA_100'` | Stock must have this column > 1.0 to qualify as a new buy. Pass `None` to disable. |
 | `settlement_delay` | `3` | Trading days between sell and cash availability |
 | `vnindex_df` | `None` | Optional VNINDEX DataFrame for volatility regime filtering |
+| `liquidity_filter` | `True` | Filter out low-liquidity stocks before ranking using ADTV thresholds |
 | `vol_lookback` | `21` | Days for realised VNINDEX volatility calculation |
 | `vol_percentile` | `0.80` | Vol percentile threshold; above this = high-vol regime → rebalance skipped |
 | `vol_window` | `252` | Rolling window for computing the percentile benchmark |
-| `liquidity_filter` | `False` | Whether to filter out low-liquidity stocks before ranking |
+| `adtv_lookback` | `20` | Days used to compute Average Daily Traded Value for the liquidity filter |
+| `adtv_participation` | `0.10` | Max fraction of ADTV a position may represent; stocks where the target size exceeds this threshold are excluded |
 
-> **Volatility Regime Filter:** When `vnindex_df` is provided, rebalance months where VNINDEX realised vol exceeds the `vol_percentile` of its own history are skipped entirely. The equity curve is still recorded continuously. In the 87-month backtest, 19 months were skipped by this filter (predominantly the COVID drawdown in 2020 and the 2022 correction).
+> **Volatility Regime Filter:** When `vnindex_df` is provided, rebalance months where VNINDEX realised vol exceeds the `vol_percentile` of its own history are skipped entirely. The equity curve is still recorded continuously.
 
 **Returns:** DataFrame with columns `date`, `total_value`, `cash`, `pending_cash`, `number_of_holdings`.
 
@@ -570,7 +580,7 @@ Used by the GitHub Actions precompute workflow. Runs the full walk-forward CV an
 **Parameters:**
 - `df` — Fully processed DataFrame (features + targets + `qid` must already exist)
 - `selected_features` — List of feature column names to train on
-- `use_mega_alpha` — Reserved for future use; currently always runs the Basic XGBoost path
+- `use_mega_alpha` — Reserved for future use; currently always runs the XGBoost path
 - `output_dir` (`str`, default `"data/pretrained/"`) — Directory where artifacts are saved
 - `vnindex_df` — Reserved for future use; currently unused
 
@@ -589,7 +599,7 @@ Used by the GitHub Actions precompute workflow. Runs the full walk-forward CV an
 
 ---
 
-#### `generate_paper_trade_signals(df, current_portfolio, features, use_mega=False, model=None, buy_n=10, trend_filter_col='dist_SMA_100', trend_filter_threshold=1.0, target_col='target_quintile') → tuple`
+#### `generate_paper_trade_signals(df, current_portfolio, features, use_mega=False, model=None, buy_n=30, trend_filter_col='dist_SMA_100', trend_filter_threshold=1.0, target_col='target_quintile') → tuple`
 
 The main inference function. If no pretrained `model` is passed, trains a fresh XGBoost ranker on all historical data up to (but not including) today's date, then scores today's VN100 universe.
 
@@ -609,7 +619,7 @@ The main inference function. If no pretrained `model` is passed, trains a fresh 
 
 | Parameter | Default | Description |
 |---|---|---|
-| `buy_n` | `10` | Top N stocks targeted for new entries; also the hold threshold |
+| `buy_n` | `30` | Top N stocks targeted for new entries; also the hold threshold |
 | `trend_filter_col` | `'dist_SMA_100'` | Feature column for the trend filter |
 | `trend_filter_threshold` | `1.0` | Stock must be above this value to qualify as a new buy |
 | `use_mega` | `False` | Not yet implemented — raises `NotImplementedError` if `True` |
@@ -639,31 +649,60 @@ Thin wrapper around `generate_paper_trade_signals` that returns a clean dictiona
 
 ## `deep_combiner.py`
 
-**Purpose:** Experimental LSTM-Attention model that learns to dynamically weight a set of alpha signals based on market context. Used by the AlphaForge path in `walk_forward_cv`.
+**Purpose:** Experimental AlphaForge-style factor combiner that dynamically weights a set of alpha signals based on rolling RankIC/ICIR statistics. Used by the `'alphaforge'` path in `walk_forward_cv`.
 
-**Status:** Experimental. In walk-forward backtesting, AlphaForge produced a higher IC IR (0.683 vs 0.337) but weaker risk-adjusted returns — Sharpe 0.37 vs 0.53, monthly win rate 52.87% vs 59.77%. The production pipeline uses the Basic XGBoost model only. The `use_mega=True` path in `inference.py` is a placeholder stub not yet connected to this model.
+**Status:** Experimental. In walk-forward backtesting, AlphaForge produced a higher IC IR but weaker risk-adjusted returns (Sharpe 0.81 vs 0.96, monthly win rate 58.73% vs 63.49%) compared to the XGBoost baseline. The production pipeline uses the XGBoost model only.
 
-### `class DynamicAlphaCombiner(nn.Module)`
+### `class AlphaForgeCombiner`
 
-**Architecture:**
-1. **Context LSTM** — Reads a sequence of alpha values (`input_size=num_alphas`, `hidden_size=16`) and encodes the market state into a 16-dimensional hidden vector
-2. **Attention Scoring** — A two-layer MLP (`Linear(16→8) → Tanh → Linear(8→num_alphas) → Softmax`) maps the hidden state to a probability distribution over alpha signals
-3. **Weighted Sum** — Current-step alpha values are combined using the attention weights to produce a single `Mega_Alpha` scalar
+**Architecture (AlphaForge Algorithm 2):**
+
+At each rebalance date, given a factor zoo `Z = {f1, ..., fk}`:
+1. Compute rolling RankIC and ICIR for each factor over the past `ic_window` periods
+2. **Gate** — drop factors where `|RankIC| < ic_threshold` OR `|ICIR| < icir_threshold`
+3. Sort survivors by `|RankIC|`, keep top `max_active_factors`
+4. Fit Ridge regression of those factors against recent returns → dynamic weights
+5. Apply weights to current-date factor values → `Mega_Alpha` scalar per stock
+
+The paper motivates the linear combiner (over LSTM or attention-based approaches) for interpretability and overfitting resistance on financial noise.
 
 **Constructor:**
 ```python
-model = DynamicAlphaCombiner(num_alphas=14)  # one per WQ alpha column
+combiner = AlphaForgeCombiner(
+    ic_window=40,
+    ic_threshold=0.02,
+    icir_threshold=0.2,
+    max_active_factors=13,
+    ridge_alpha=1.0,
+)
 ```
 
-**Forward pass:**
+**Parameters:**
+- `ic_window` — Number of past dates for rolling RankIC (default `40`)
+- `ic_threshold` — Minimum |RankIC| to keep a factor active (default `0.02`)
+- `icir_threshold` — Minimum |ICIR| to keep a factor active (default `0.2`)
+- `max_active_factors` — Top-N factors by |RankIC| passed to Ridge (default `13`)
+- `ridge_alpha` — Ridge regularisation strength (default `1.0`)
+
+**`fit_and_predict(hist_df, current_df, alpha_cols, ret_col='next_1m_ret') → Series`**
+
+Fits the dynamic factor weights on `hist_df` (historical data up to the rebalance date) and applies them to `current_df` (today's cross-section) to produce a `Mega_Alpha` score per stock.
+
 ```python
-mega_alpha, attention_weights = model(alphas_seq)
-# alphas_seq: Tensor of shape [batch, time_steps, num_alphas]
-# mega_alpha: Tensor of shape [batch] — the combined alpha score
-# attention_weights: Tensor of shape [batch, num_alphas]
+mega_alpha_scores = combiner.fit_and_predict(
+    hist_df=train_slice,
+    current_df=today_df,
+    alpha_cols=['WQ_Alpha_001', 'WQ_Alpha_006', ...],
+    ret_col='next_1m_ret',
+)
+# Returns: pd.Series of Mega_Alpha scores, one per stock
 ```
 
-**Training:** See `train_mega_combiner()` in `models.py`. Trained with Adam + MSE loss against `risk_adj_ret`. In the walk-forward loop, the model receives a single time-step (`unsqueeze(1)`) rather than a true sequence — this simplification limits temporal modelling capacity and is a known limitation of the current implementation.
+**`report() → None`**
+
+Prints the currently active factors and their Ridge weights, sorted by absolute weight. Useful for inspecting which signals the combiner is relying on at a given rebalance date.
+
+**Training:** The combiner has no separate training step — it recomputes weights at every `fit_and_predict()` call. `build_mega_combiner()` in `models.py` is the factory function used to construct an instance with configured hyperparameters.
 
 ---
 
@@ -760,8 +799,8 @@ get_tags()
                                 initial_train_months=24,
                                 test_months=6, gap_days=21)
                               (models.py)
-                              ├── Basic: XGBoost LambdaRank only  ✅ Production
-                              └── AlphaForge: + GP alphas + LSTM-Attention  🔬 Experimental
+                              ├── model='xgboost': XGBoost LambdaRank only  ✅ Production
+                              └── model='alphaforge': AlphaForge Ridge combiner  🔬 Experimental
                                            │
                          ┌─────────────────┴──────────────────┐
                          │                                    │
@@ -776,7 +815,7 @@ get_tags()
               → pretrained_predictions.parquet  ──► Hugging Face Dataset
               → pretrained_equity_curve.parquet ──► Hugging Face Dataset
               → pretrained_model.json           ──► Hugging Face Dataset
-                         │ 
+                         │
                          ▼
                       app.py
                (fetches from HF at runtime, no retraining)

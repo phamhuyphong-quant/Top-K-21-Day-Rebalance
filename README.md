@@ -2,7 +2,7 @@
 
 > A machine learning pipeline that ranks Vietnamese stocks in the VN100 universe by predicted forward returns, and generates actionable paper-trading signals through an interactive Streamlit dashboard.
 
-[![Live App](https://img.shields.io/badge/🚀%20Live%20App-Streamlit-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white)](https://crosssectionalrankvn100-analyzing.streamlit.app/)
+[![Live App](https://img.shields.io/badge/🚀%20Live%20App-Streamlit-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white)](https://cross-sectional-ranking-vn.streamlit.app/)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![License: GPL v3.0](https://img.shields.io/badge/License-GPLv3-blue.svg?style=for-the-badge)](https://www.gnu.org/licenses/gpl-3.0)
 
@@ -16,7 +16,7 @@ The Vietnamese stock market (VN100 universe) presents unique challenges: a relat
 
 Instead of forecasting where a stock's price will go, this system answers a simpler question: *which stocks are likely to outperform the others next month?* The model ranks all stocks in the VN100 universe daily by expected relative performance, and flags the top-ranked as Buy signals.
 
-The core production model is an **XGBoost LambdaRank** (`rank:ndcg`), trained using walk-forward cross-validation to simulate real-world out-of-sample performance. A **sequence-based LSTM** architecture was also explored but found to be unstable out-of-sample — see [Model Architecture](#-model-architecture) for the full comparison.
+The core production model is an **XGBoost LambdaRank** (`rank:ndcg`), trained using walk-forward cross-validation to simulate real-world out-of-sample performance. An **AlphaForge-style factor combiner** (Ridge regression with dynamic IC-based factor gating) was also explored but found to be unstable out-of-sample — see [Model Architecture](#-model-architecture) for the full comparison.
 
 ### Why `rank:ndcg` over regression?
 
@@ -27,11 +27,12 @@ A regression model trained on raw returns tries to predict exact magnitudes — 
 ## 🗂️ Project Structure
 
 ```
-project 1/
+project/
 ├── notebooks/
 │   ├── 01_Data_Collection.ipynb
 │   ├── 02_Feature_Engineering.ipynb          # Feature engineering + feature group search
-│   └── 03_Model_Training_and_Evaluation.ipynb  # Walk-forward CV, backtest, model comparison
+│   ├── 03_Model_Training.ipynb               # Walk-forward CV, Optuna tuning
+│   └── 04_Backtesting_and_Evaluation.ipynb   # Backtest engine, metrics, model comparison
 ├── src/
 │   ├── data_collect.py       # VN100 universe construction & incremental data fetching
 │   ├── features.py           # Technical feature engineering (RSI, MA, volatility, etc.)
@@ -40,7 +41,7 @@ project 1/
 │   ├── models.py             # XGBoost ranker, walk-forward CV, Optuna tuning
 │   ├── evaluation.py         # Backtest engine, portfolio metrics, IC analysis
 │   ├── inference.py          # Live signal generation (Buy / Hold / Sell)
-│   ├── deep_combiner.py      # LSTM sequence-based dynamic alpha weighting (experimental)
+│   ├── deep_combiner.py      # AlphaForge-style dynamic alpha weighting (experimental)
 │   └── app.py                # Streamlit dashboard
 ├── kaggle_kernel/            # Kaggle kernel scripts for GPU-accelerated training
 ├── .github/workflows/        # GitHub Actions: daily updates, precompute, keep-alive
@@ -54,7 +55,7 @@ project 1/
 
 - **VN100 Universe Construction** — Automatically combines VN30 + VNMidCap from the VCI data source via `vnstock`.
 - **Incremental Data Updates** — Smart incremental fetching: only downloads new trading days, skipping up-to-date symbols.
-- **Rich Feature Set** — Multi-horizon log returns (1W/1M/3M/6M/1Y), volume surge ratios, annualised volatility, RSI-14, SMA/EMA distances (9/21/50/100/200), 52-week high distance, skip-1M return, OBV trend, price-volume divergence, and WorldQuant-style alpha factors (Alpha #6, #12, #24, #28, #41, #53, #54, #60, #101). The active production feature set is defined in `config.py` (`final_features`).
+- **Rich Feature Set** — Multi-horizon log returns (1W/1M/3M/6M/1Y), volume surge ratios, annualised volatility, RSI-14, SMA/EMA distances (9/21/50/100/200), 52-week high distance, skip-1M return, OBV trend, price-volume divergence, and WorldQuant-style alpha factors (Alpha #001, #002, #006, #007, #013, #016, #024, #028, #040, #101, #103, #200, #201, #202). The active production feature set is defined in `config.py` (`final_features`).
 - **Feature Group Search** — `feature_search.py` exhaustively evaluates all combinations of feature groups to find the configuration that maximises ROI or Sharpe ratio (up to 127 combinations across 7 groups).
 - **XGBoost LambdaRank** — Optimises NDCG directly for ranking quality rather than regression error. Selected as the production model after comparative experiments.
 - **Walk-Forward Validation** — Simulates live deployment; avoids look-ahead bias with a strict 21-day gap between train and test periods (24-month training window, 6-month test window).
@@ -62,7 +63,7 @@ project 1/
 - **Realistic Backtest Engine** — Simulates VN-market T+3 settlement, monthly rebalancing, trailing stops, take-profit rules, and transaction costs.
 - **Live Signal Engine** — Produces daily Buy / Hold / Sell / Not-VN100 signals with a configurable top-N band and trend filter.
 - **Streamlit Dashboard** — Interactive UI for backtesting, signal viewing, feature importance, IC charts, and Gemini-powered AI commentary.
-- **Experimental: LSTM Sequence Model** — Captures 20–60 day temporal momentum patterns using an LSTM architecture. Tested via `use_mega=True` in `walk_forward_cv` but found to underperform the baseline out-of-sample. Retained in the codebase for research purposes only.
+- **Experimental: AlphaForge Factor Combiner** — Implements AlphaForge Algorithm 2: dynamic Ridge regression with rolling RankIC/ICIR factor gating. Enable with `model='alphaforge'` in `walk_forward_cv`. Found to underperform the XGBoost baseline out-of-sample. Retained in the codebase for research purposes only.
 - **Experimental: GP Alpha Mining** — Uses genetic programming (`gplearn`) to evolve new alpha expressions from base features. Enable with `use_gp=True`.
 
 ---
@@ -88,7 +89,7 @@ All results are **out-of-sample** from walk-forward cross-validation (24-month i
 | Monthly Win Rate | **63.49%** |
 | Profit Factor | **2.88** |
 
-### Experimental Model: XGBoost + LSTM Sequence Architecture
+### Experimental Model: XGBoost + AlphaForge Factor Combiner
 
 | Metric | Value |
 |---|---|
@@ -105,13 +106,13 @@ All results are **out-of-sample** from walk-forward cross-validation (24-month i
 | Monthly Win Rate | 58.73% |
 | Profit Factor | 2.55 |
 
-> **Why XGBoost wins:** Although the LSTM showed marginally lower max drawdown, its risk-adjusted return profile (Sharpe 0.81, Sortino 1.56) was consistently weaker than the XGBoost baseline (Sharpe 0.96, Sortino 1.81). The LSTM also underperformed on total return (+131.78% vs +154.01%) and monthly win rate (58.73% vs 63.49%), with no compensating stability benefit. The XGBoost model's tree-based nature proves more robust to market noise across different regimes — notably handling the VNINDEX drawdowns with stronger consistency through the `dist_SMA_100` trend filter. The LSTM is retained in the codebase for research purposes only.
+> **Why XGBoost wins:** Although the AlphaForge combiner showed marginally lower max drawdown, its risk-adjusted return profile (Sharpe 0.81, Sortino 1.56) was consistently weaker than the XGBoost baseline (Sharpe 0.96, Sortino 1.81). The AlphaForge model also underperformed on total return (+131.78% vs +154.01%) and monthly win rate (58.73% vs 63.49%), with no compensating stability benefit. The XGBoost model's tree-based nature proves more robust to market noise across different regimes — notably handling the VNINDEX drawdowns with stronger consistency through the `dist_SMA_100` trend filter. The AlphaForge combiner is retained in the codebase for research purposes only.
 
 ---
 
 ## 🌐 Live Demo
 
-**🔗 [https://crosssectionalrankvn100-analyzing.streamlit.app/](https://crosssectionalrankvn100-analyzing.streamlit.app/)**
+**🔗 [https://cross-sectional-ranking-vn.streamlit.app/](https://cross-sectional-ranking-vn.streamlit.app/)**
 
 The dashboard lets you:
 - Run backtests interactively on the VN100 universe
@@ -166,16 +167,11 @@ Or run `notebooks/01_Data_Collection.ipynb` for an interactive walkthrough.
 ### 2. Feature Engineering
 
 ```python
-from src.alpha_mining import WorldQuantAlphas
 from src.features import build_features, build_targets, target_generating_ranking
 
-# Add WorldQuant alpha factors to raw OHLCV data
-wq = WorldQuantAlphas(df_raw)
-wq_cols_df = wq.generate_all()
-for col in wq_cols_df.columns:
-    df_raw[col] = wq_cols_df[col]
-
 # Build all technical features and forward-return targets
+# Note: build_features() calls WorldQuantAlphas.generate_all() internally —
+# do NOT call WorldQuantAlphas manually on df_raw before passing it here.
 df = build_features(df_raw)
 df = build_targets(df)
 df = target_generating_ranking(df)
@@ -189,10 +185,14 @@ The production feature set is defined in `config.py`:
 
 ```python
 from config import final_features
-# final_features = ['log_ret_6m', 'volatility_1w', 'volatility_1m',
-#                   'volatility_shock_monthly', 'volatility_shock_weekly',
-#                   'dist_EMA_9', 'volume_surge_monthly', 'volume_surge_weekly',
-#                   'WQ_Alpha_012', 'WQ_Alpha_024', 'WQ_Alpha_053', 'dist_EMA_100']
+# final_features = [
+#     'dist_52w_high', 'log_ret_skip1m', 'WQ_Alpha_024', 'log_ret_6m',
+#     'RSI_14', 'log_ret_3m', 'price_vol_divergence', 'dist_SMA_50',
+#     'dist_SMA_21', 'log_ret_1w', 'log_ret_1m', 'WQ_Alpha_028',
+#     'volume_surge_weekly', 'log_ret_1y', 'volatility_shock_monthly',
+#     'volume_surge_monthly', 'volatility_shock_weekly',
+#     'volatility_1w', 'volatility_1m', 'volatility_6m',
+# ]
 ```
 
 To run your own feature group search (optional):
@@ -209,7 +209,7 @@ best_roi_row, best_sharpe_row, results_df = search_best_roi_and_sharpe(
 )
 ```
 
-### 4. Model Training & Backtest
+### 4. Model Training
 
 ```python
 from src.models import walk_forward_cv
@@ -220,11 +220,11 @@ results = walk_forward_cv(df, final_features, initial_train_months=24, test_mont
 # Experimental: with GP alpha mining
 results = walk_forward_cv(df, final_features, initial_train_months=24, test_months=6, gap_days=21, use_gp=True)
 
-# Experimental: with LSTM sequence architecture (unstable out-of-sample)
-results = walk_forward_cv(df, final_features, initial_train_months=24, test_months=6, gap_days=21, use_mega=True)
+# Experimental: with AlphaForge dynamic factor combiner (unstable out-of-sample)
+results = walk_forward_cv(df, final_features, initial_train_months=24, test_months=6, gap_days=21, model='alphaforge')
 ```
 
-Or run `notebooks/03_Model_Training_and_Evaluation.ipynb`.
+Or run `notebooks/03_Model_Training.ipynb`.
 
 ### 5. Hyperparameter Tuning (Optional)
 
@@ -255,6 +255,8 @@ plot_equity_curves(result, labels=['XGBoost Baseline'])
 metrics = print_performance_report(result, initial_capital=100_000)
 ```
 
+Or run `notebooks/04_Backtesting_and_Evaluation.ipynb`.
+
 ### 7. Live Signal Generation
 
 ```python
@@ -264,7 +266,7 @@ buy, hold, sell, not_vn100, rankings = generate_paper_trade_signals(
     df=df,
     current_portfolio=['VNM', 'FPT', 'HPG'],
     features=final_features,
-    buy_n=10,
+    buy_n=30,
     trend_filter_col='dist_SMA_100'
 )
 ```
@@ -288,16 +290,20 @@ Feature Engineering (src/features.py + src/alpha_mining.py)
   ├── Volume:          weekly & monthly surge ratios, OBV trend
   ├── Oscillator:      RSI-14
   ├── Price Structure: 52-week high distance, price-volume divergence
-  └── Alpha Factors:   WorldQuant Alpha #6, #12, #24, #28, #41, #53, #54, #60, #101
+  └── Alpha Factors:   WorldQuant Alpha #001, #002, #006, #007, #013, #016,
+                       #024, #028, #040, #101, #103, #200, #201, #202
       │
       ▼
 (Optional) Feature Group Search (src/feature_search.py)
   └── Exhaustive combination search to find best feature groups by ROI / Sharpe
       │
       ▼
-Production Features: 12 selected from config.final_features
-  [log_ret_6m, volatility_1w/1m, volatility_shock_monthly/weekly,
-   dist_EMA_9/100, volume_surge_monthly/weekly, WQ_Alpha_012/024/053]
+Production Features: 20 selected from config.final_features
+  [dist_52w_high, log_ret_skip1m, WQ_Alpha_024, log_ret_6m, RSI_14,
+   log_ret_3m, price_vol_divergence, dist_SMA_50, dist_SMA_21, log_ret_1w,
+   log_ret_1m, WQ_Alpha_028, volume_surge_weekly, log_ret_1y,
+   volatility_shock_monthly, volume_surge_monthly, volatility_shock_weekly,
+   volatility_1w, volatility_1m, volatility_6m]
       │
       ▼
 Target: Risk-Adjusted Quintile (next_1m_ret / volatility_3m → qcut into 5 bins per day)
@@ -310,7 +316,7 @@ Walk-Forward Cross-Validation (src/models.py)
       │
       ▼
 XGBoost LambdaRank (rank:ndcg)   ✅ Production
-[Experimental: LSTM Sequence Model — unstable OOS, not recommended for production]
+[Experimental: AlphaForge Factor Combiner — Ridge + IC gating, unstable OOS, not recommended for production]
       │
       ▼
 Realistic Backtest (src/evaluation.py)
@@ -328,7 +334,7 @@ Daily Cross-Sectional Ranking → Buy / Hold / Sell Signals (src/inference.py)
 
 | Signal | Condition |
 |---|---|
-| 🟢 **BUY** | Ranks in top `buy_n` (default: 10) AND `dist_SMA_100 > 1.0` (trend filter) AND not already held |
+| 🟢 **BUY** | Ranks in top `buy_n` (default: 30) AND `dist_SMA_100 > 1.0` (trend filter) AND not already held |
 | 🔵 **HOLD** | Currently held AND ranks within top `buy_n` |
 | 🟠 **SELL** | Currently held BUT falls outside the `buy_n` threshold |
 | 🔴 **NOT VN100** | Currently held BUT no longer in today's VN100 universe |
@@ -377,4 +383,4 @@ This project utilises the following open-source libraries:
 * **gplearn**: Licensed under GNU GPL v3.0. Special thanks to the authors for providing the symbolic regression framework used in this project's GP alpha mining.
 * **vnstock**: For providing API access to Vietnam stock market data.
 * **XGBoost & Scikit-learn**: For the core machine learning and ranking implementation.
-* **arXiv:2406.18394**: Research paper that motivated the LSTM sequence architecture exploration.
+* **arXiv:2406.18394**: Research paper that motivated the AlphaForge factor combination architecture exploration.

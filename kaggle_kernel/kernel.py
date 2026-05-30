@@ -54,3 +54,27 @@ for fname in ["pretrained_predictions.parquet", "pretrained_equity_curve.parquet
         repo_type="dataset",
     )
     print(f"✅ Uploaded {fname} to Hugging Face")
+
+# ── 6. Generate today's signals and upload ───────────────────────────────────
+from src.inference import generate_paper_trade_signals
+
+_, _, _, _, ranked_today = generate_paper_trade_signals(
+    df=df,
+    current_portfolio=[],       # portfolio-agnostic; Streamlit filters at runtime
+    features=best_features,
+    model=None,                 # retrains on full history inside the function
+    buy_n=30,
+    trend_filter_col='dist_SMA_100',
+    target_col='target_quintile'
+)
+
+ranked_today = ranked_today.assign(signal_date=str(df['date'].max().date()))
+ranked_today.to_parquet('/kaggle/working/repo/data/pretrained/today_signals.parquet', index=False)
+
+api.upload_file(
+    path_or_fileobj='/kaggle/working/repo/data/pretrained/today_signals.parquet',
+    path_in_repo='today_signals.parquet',
+    repo_id="PhongHPham/vn_cross_sectional_ranking_data_storage",
+    repo_type="dataset",
+)
+print("✅ Uploaded today_signals.parquet to Hugging Face")
