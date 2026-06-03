@@ -248,7 +248,8 @@ result = simulate_portfolio(
     initial_capital=100_000,
     buy_fraction=0.10,
     time_of_rebalance='M',
-    trend_filter_col='dist_SMA_100'
+    trend_filter_col='dist_SMA_100',
+    allocation='equal',
 )
 
 plot_equity_curves(result, labels=['XGBoost Baseline'])
