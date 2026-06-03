@@ -287,6 +287,40 @@ def print_performance_report(result, initial_capital=None, rf_annual=0.045):
         'profit_factor' : profit_factor,
     }
 
+
+def allocate_equal(executable, cash):
+    """
+    Current behaviour: split cash equally across all executable stocks.
+    Returns list of (sym, price, cash_allocated).
+    """
+    if not executable:
+        return []
+    cash_per_stock = cash / len(executable)
+    return [(sym, price, cash_per_stock) for sym, price in executable]
+
+
+def allocate_rank_weighted(executable, cash, scores):
+    """
+    Weight each stock proportionally to its pred_score rank.
+    Rank 1 (highest score) gets the most cash, rank N gets the least.
+    scores: dict of {sym: pred_score}
+    """
+    if not executable:
+        return []
+
+    syms   = [sym for sym, price in executable]
+    ranked = sorted(syms, key=lambda s: scores.get(s, 0), reverse=True)
+    n      = len(ranked)
+
+    # Linear rank weights: rank 1 → weight N, rank N → weight 1
+    weights = {sym: (n - i) for i, sym in enumerate(ranked)}
+    total_w = sum(weights.values())
+
+    return [
+        (sym, price, cash * weights[sym] / total_w)
+        for sym, price in executable
+    ]
+
 def simulate_portfolio(
     df,
     model,
@@ -303,6 +337,7 @@ def simulate_portfolio(
     vol_window=252,
     adtv_lookback=20,           # days for ADTV calculation
     adtv_participation=0.10,    # your order must be <= this fraction of ADTV
+    allocation='equal',
 ):
     """
     Hard-rebalance portfolio simulator for VN market with clean monthly timing:
@@ -345,6 +380,9 @@ def simulate_portfolio(
     vol_window          : rolling window for vol percentile baseline
     adtv_lookback       : days to average volume×price for ADTV (default 20)
     adtv_participation  : max fraction of ADTV your order can represent (default 10%)
+    allocation          : cash allocation strategy for buy orders: 'equal' (default)
+                          splits cash evenly across all buy targets; 'rank_weighted' 
+                          allocates proportionally to pred_score rank (rank 1 gets the most cash)
     """
 
     # ------------------------------------------------------------------
@@ -475,24 +513,29 @@ def simulate_portfolio(
                         executable.append((sym, price))
 
                     # ── PASS 2: buy using the correct denominator ────────────
-                    # Divide cash only among stocks confirmed to execute,
-                    # so no cash is stranded by price-missing or lot-size failures.
-                    remaining_cash = cash
-                    cash_per_stock = remaining_cash / max(1, len(executable))
+                    # Build score lookup for rank-weighted allocation
+                    if allocation == 'rank_weighted':
+                        score_lookup = settlement_day_df.set_index('Symbol')['pred_score'].to_dict() \
+                                    if 'pred_score' in settlement_day_df.columns else {}
+                        scores = {sym: score_lookup.get(sym, 0) for sym in order['targets']}
+                        alloc = allocate_rank_weighted(executable, cash, scores)
+                    else:
+                        alloc = allocate_equal(executable, cash)
 
-                    for sym, price in executable:
-                        max_shares    = cash_per_stock / (price * 1.001)
+                    remaining_cash = cash
+                    for sym, price, cash_allocated in alloc:
+                        max_shares    = cash_allocated / (price * 1.001)
                         shares_to_buy = int(max_shares // 100) * 100
 
                         if shares_to_buy <= 0:
-                            continue  # safety net; should rarely fire after Pass 1
+                            continue
 
                         buy_value  = shares_to_buy * price
                         fee        = buy_value * 0.001
                         total_cost = buy_value + fee
 
                         if total_cost > remaining_cash:
-                            continue  # guards against rounding drift on the last stock
+                            continue
 
                         if sym in portfolio:
                             old          = portfolio[sym]

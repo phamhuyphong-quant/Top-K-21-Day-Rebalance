@@ -524,14 +524,13 @@ ev.plot_equity_curves(result_basic, result_alphaforge,
 
 ---
 
-#### `simulate_portfolio(df, model, features, initial_capital, buy_fraction, time_of_rebalance, trend_filter_col, settlement_delay, vnindex_df, liquidity_filter, vol_lookback, vol_percentile, vol_window, adtv_lookback, adtv_participation) → DataFrame`
+#### `simulate_portfolio(df, model, features, initial_capital, buy_fraction, time_of_rebalance, trend_filter_col, settlement_delay, vnindex_df, liquidity_filter, vol_lookback, vol_percentile, vol_window, adtv_lookback, adtv_participation, allocation) → DataFrame`
 
 Simulates a realistic portfolio with VN-market timing conventions.
 
 **Execution model:**
 1. **Rebalance day (day 0):** Model scores stocks → ranks universe → hard-sells every stock NOT in top-N at today's price; sell proceeds enter `pending_cash` (available after T+`settlement_delay`)
-2. **Settlement (day +3):** Pending cash becomes available → new buy orders execute at settlement-day prices, split equally across all buy targets
-
+2. **Settlement (day +3):** Pending cash becomes available → new buy orders execute at settlement-day prices, split across all buy targets according to the allocation strategy (`'equal'` or `'rank_weighted'`)
 This correctly models VN T+3 settlement — you cannot buy with money from the same-day sell.
 
 **Parameters:**
@@ -551,6 +550,7 @@ This correctly models VN T+3 settlement — you cannot buy with money from the s
 | `vol_window` | `252` | Rolling window for computing the percentile benchmark |
 | `adtv_lookback` | `20` | Days used to compute Average Daily Traded Value for the liquidity filter |
 | `adtv_participation` | `0.10` | Max fraction of ADTV a position may represent; stocks where the target size exceeds this threshold are excluded |
+| `allocation` | `'equal'` | Cash allocation strategy per buy order: `'equal'` splits cash evenly across all stocks; `'rank_weighted'` gives more cash to higher-ranked stocks proportionally to their rank position |
 
 > **Volatility Regime Filter:** When `vnindex_df` is provided, rebalance months where VNINDEX realised vol exceeds the `vol_percentile` of its own history are skipped entirely. The equity curve is still recorded continuously.
 
