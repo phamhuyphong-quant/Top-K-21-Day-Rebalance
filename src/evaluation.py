@@ -335,7 +335,6 @@ def simulate_portfolio(
     vol_lookback=21,
     vol_percentile=0.80,
     vol_window=252,
-    adtv_lookback=20,           # days for ADTV calculation
     adtv_participation=0.10,    # your order must be <= this fraction of ADTV
     allocation='equal',
 ):
@@ -378,7 +377,6 @@ def simulate_portfolio(
     vol_lookback        : rolling window (days) for realized vol on VNINDEX
     vol_percentile      : vol regime threshold percentile (0.80 = skip rebalance if top-20% vol)
     vol_window          : rolling window for vol percentile baseline
-    adtv_lookback       : days to average volume×price for ADTV (default 20)
     adtv_participation  : max fraction of ADTV your order can represent (default 10%)
     allocation          : cash allocation strategy for buy orders: 'equal' (default)
                           splits cash evenly across all buy targets; 'rank_weighted' 
