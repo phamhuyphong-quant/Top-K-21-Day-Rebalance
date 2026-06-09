@@ -12,7 +12,7 @@
 
 ## 🧠 Project Overview
 
-The Vietnamese stock market (VN100 universe) presents unique challenges: a relatively small investable universe of ~100 liquid stocks, a monthly rebalancing cadence aligned with local liquidity patterns, and limited availability of fundamental data from Western providers. These constraints make **cross-sectional ranking** a more tractable approach than absolute price prediction.
+The Vietnamese stock market (VN100 universe) presents unique challenges: a relatively small investable universe of ~100 liquid stocks, a fixed 21-trading-day rebalancing cadence (matching the target return horizon) aligned with local liquidity patterns, and limited availability of fundamental data from Western providers. These constraints make **cross-sectional ranking** a more tractable approach than absolute price prediction.
 
 Instead of forecasting where a stock's price will go, this system answers a simpler question: *which stocks are likely to outperform the others next month?* The model ranks all stocks in the VN100 universe daily by expected relative performance, and flags the top-ranked as Buy signals.
 
@@ -60,7 +60,7 @@ project/
 - **XGBoost LambdaRank** — Optimises NDCG directly for ranking quality rather than regression error. Selected as the production model after comparative experiments.
 - **Walk-Forward Validation** — Simulates live deployment; avoids look-ahead bias with a strict 21-day gap between train and test periods (24-month training window, 6-month test window).
 - **IC Analysis** — Evaluates each feature's Information Coefficient (Spearman rank correlation) against future returns, both aggregate and time-series IC IR.
-- **Realistic Backtest Engine** — Simulates VN-market T+3 settlement, monthly rebalancing, trailing stops, take-profit rules, and transaction costs.
+- **Realistic Backtest Engine** — Simulates VN-market T+3 settlement, fixed 21-trading-day rebalancing (aligned to the `shift(-21)` target horizon), trailing stops, take-profit rules, and transaction costs.
 - **Live Signal Engine** — Produces daily Buy / Hold / Sell / Not-VN100 signals with a configurable top-N band and trend filter.
 - **Streamlit Dashboard** — Interactive UI for backtesting, signal viewing, feature importance, IC charts, and Gemini-powered AI commentary.
 - **Experimental: AlphaForge Factor Combiner** — Implements AlphaForge Algorithm 2: dynamic Ridge regression with rolling RankIC/ICIR factor gating. Enable with `model='alphaforge'` in `walk_forward_cv`. Found to underperform the XGBoost baseline out-of-sample. Retained in the codebase for research purposes only.
@@ -70,7 +70,7 @@ project/
 
 ## 📊 Backtest Results
 
-All results are **out-of-sample** from walk-forward cross-validation (24-month initial training window, 6-month test windows, 21-day gap). No look-ahead bias — each fold trains strictly on past data. Backtest period: **January 2021 → April 2026 (63 months)**.
+All results are **out-of-sample** from walk-forward cross-validation (24-month initial training window, 6-month test windows, 21-day gap). No look-ahead bias — each fold trains strictly on past data. Backtest period: **January 2021 → April 2026**.
 
 ### Production Model: XGBoost LambdaRank (Baseline)
 
@@ -321,7 +321,7 @@ XGBoost LambdaRank (rank:ndcg)   ✅ Production
       │
       ▼
 Realistic Backtest (src/evaluation.py)
-  ├── T+3 settlement, monthly rebalancing
+  ├── T+3 settlement, 21-trading-day rebalancing (aligned to target horizon)
   ├── Trailing stop (-10%), take-profit (+50%)
   └── Transaction costs (fee + tax + per-share fee)
       │

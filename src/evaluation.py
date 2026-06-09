@@ -395,8 +395,18 @@ def simulate_portfolio(
     if 'adtv' not in df.columns:
         raise ValueError("df must have pre-computed 'adtv' column from build_features()")
 
-    df['year_time'] = df['date'].dt.to_period(time_of_rebalance)
-    rebalance_dates = sorted(df.groupby('year_time')['date'].min().unique())
+    # Build rebalance dates by stepping forward a fixed number of trading days,
+    # matching the shift(-21) / shift(-5) used in build_targets so the holding
+    # period the model was trained on equals the holding period in the backtest.
+    # Step size is derived purely from the historical trading calendar — no future
+    # dates are referenced, so there is no look-ahead.
+    _step = {'M': 21, 'W': 5}.get(time_of_rebalance, 21)
+    _all_trading_days = np.sort(df['date'].unique())
+    rebalance_dates = []
+    _idx = 0
+    while _idx < len(_all_trading_days):
+        rebalance_dates.append(pd.Timestamp(_all_trading_days[_idx]))
+        _idx += _step
 
     # ------------------------------------------------------------------
     # VNINDEX volatility regime filter

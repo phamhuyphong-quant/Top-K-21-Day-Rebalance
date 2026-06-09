@@ -192,7 +192,7 @@ Computes two derived volume features beyond raw surge ratios.
 
 Master pipeline that calls all feature functions in the correct order: `WorldQuantAlphas.generate_all()` → `return_ln` → `volatility` → `MA` → `volume` → `rsi` → `volume_quality` → `price_structure`.
 
-After computing all features, **every feature column is shifted forward by 1 day per symbol** using a grouped shift, preventing same-day look-ahead. Rows with any `inf` or `NaN` in feature columns are then dropped. Dates where fewer than `min_stocks_per_date` symbols survive are also removed (logged as a warning).
+Look-ahead is prevented by a 1-day shift applied inside each sub-function (e.g. `return_ln`, `volatility`, `MA`, etc.) before features are assembled. Rows with any `inf` or `NaN` in feature columns are then dropped. Dates where fewer than `min_stocks_per_date` symbols survive are also removed (logged as a warning).
 
 **Returns:** Cleaned DataFrame with all features. Forward-return targets (`next_1m_ret`, `next_1w_ret`) are **not** added here — call `build_targets()` separately.
 
@@ -316,7 +316,7 @@ Features are organised into seven named groups:
 | `moving_average` | `dist_SMA_9/21/50/100/200`, `dist_EMA_9/21/50/100/200` |
 | `volume` | `volume_surge_monthly/weekly`, `obv_trend`, `price_vol_divergence` |
 | `rsi` | `RSI_14` |
-| `wq_features` | `WQ_Alpha_012`, `WQ_Alpha_024`, `WQ_Alpha_028`, `WQ_Alpha_053`, `WQ_Alpha_060` |
+| `wq_features` | `WQ_Alpha_001`, `WQ_Alpha_002`, `WQ_Alpha_006`, `WQ_Alpha_007`, `WQ_Alpha_013`, `WQ_Alpha_016`, `WQ_Alpha_024`, `WQ_Alpha_028`, `WQ_Alpha_040`, `WQ_Alpha_101`, `WQ_Alpha_103`, `WQ_Alpha_200`, `WQ_Alpha_201`, `WQ_Alpha_202` |
 | `price_structure` | `dist_52w_high`, `log_ret_skip1m` |
 
 With 7 groups, the search evaluates up to 127 non-empty combinations — feasible to run on Kaggle.
@@ -540,7 +540,7 @@ This correctly models VN T+3 settlement — you cannot buy with money from the s
 | `model` | — | Trained XGBRanker; pass `None` to use existing `pred_score` column |
 | `initial_capital` | `10_000_000` | Starting capital |
 | `buy_fraction` | `0.05` | Top X% of ranked stocks are buy targets |
-| `time_of_rebalance` | `'M'` | Pandas period alias: `'M'` = monthly, `'W'` = weekly |
+| `time_of_rebalance` | `'M'` | Rebalance frequency key: `'M'` = every 21 trading days, `'W'` = every 5 trading days. Matches the `shift(-21)` / `shift(-5)` horizon used in `build_targets()` so the holding period the model was trained on equals the holding period in the backtest. |
 | `trend_filter_col` | `'dist_SMA_100'` | Stock must have this column > 1.0 to qualify as a new buy. Pass `None` to disable. |
 | `settlement_delay` | `3` | Trading days between sell and cash availability |
 | `vnindex_df` | `None` | Optional VNINDEX DataFrame for volatility regime filtering |
