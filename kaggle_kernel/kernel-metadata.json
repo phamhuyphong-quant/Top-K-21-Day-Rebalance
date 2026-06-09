@@ -1,6 +1,6 @@
 {
-  "id": "phmhuyphongp/precompute-vn100",
-  "title": "precompute-vn100",
+  "id": "phmhuyphongp/precompute-vn",
+  "title": "precompute-vn",
   "code_file": "kernel.py",
   "language": "python",
   "kernel_type": "script",

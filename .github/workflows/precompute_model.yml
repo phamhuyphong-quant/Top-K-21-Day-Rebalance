@@ -2,7 +2,7 @@
 
   on:
     workflow_run:
-      workflows: ["Daily VN100 Data Update"]
+      workflows: ["Daily VN Data Update"]
       types:
         - completed
     workflow_dispatch:
@@ -55,7 +55,7 @@
             KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
             KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
           run: |
-            KERNEL="phmhuyphongp/precompute-vn100"
+            KERNEL="phmhuyphongp/precompute-vn"
             echo "Waiting for kernel: $KERNEL"
             sleep 30
             for i in $(seq 1 60); do

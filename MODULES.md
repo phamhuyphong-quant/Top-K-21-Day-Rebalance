@@ -1,4 +1,4 @@
-# Module Documentation — VN100 Cross-Sectional Ranking System
+# Module Documentation — VN Cross-Sectional Ranking System
 
 This document describes each module in `src/`, what it does, and how to use it. Intended for contributors, researchers, or anyone extending the pipeline.
 
@@ -22,7 +22,7 @@ This document describes each module in `src/`, what it does, and how to use it. 
 
 ## `data_collect.py`
 
-**Purpose:** Constructs the VN100 investable universe and fetches/updates OHLCV market data. Supports multiple data sources (`VCI`, `KBS`) with automatic fallback, OHLC sanity cleaning, incremental merging, and logging.
+**Purpose:** Constructs the VN investable universe and fetches/updates OHLCV market data. Supports multiple data sources (`VCI`, `KBS`) with automatic fallback, OHLC sanity cleaning, incremental merging, and logging.
 
 ### Functions
 
@@ -41,12 +41,12 @@ Sanitises a raw list of ticker symbols by stripping whitespace, removing NaN val
 
 #### `get_tags(fetching=False) → list[str]`
 
-Returns the VN100 universe.
+Returns the VN universe.
 
-- If `fetching=False` (default): returns a **hardcoded static list** of ~100 tickers — fast and offline-safe, used by default in most workflows.
+- If `fetching=False` (default): returns a **hardcoded static list** of ~300 tickers — fast and offline-safe, used by default in most workflows.
 - If `fetching=True`: queries the KBS data source live via `vnstock` to combine VN30 + VNMidCap dynamically.
 
-**Returns:** Sorted list of ~100 ticker symbols forming the VN100 universe.
+**Returns:** Sorted list of ~300 ticker symbols forming the VN universe.
 
 **Example:**
 ```python
@@ -57,7 +57,7 @@ symbols = get_tags()
 
 # Live path — query KBS for current index constituents
 symbols = get_tags(fetching=True)
-# Logs: VN30=30  VNMID=70  VN100=97
+# Logs: VN30=30  VNMID=70  VN300~=300
 ```
 
 ---
@@ -600,12 +600,12 @@ Used by the GitHub Actions precompute workflow. Runs the full walk-forward CV an
 
 #### `generate_paper_trade_signals(df, current_portfolio, features, use_mega=False, model=None, buy_n=30, trend_filter_col='dist_SMA_100', trend_filter_threshold=1.0, target_col='target_quintile') → tuple`
 
-The main inference function. If no pretrained `model` is passed, trains a fresh XGBoost ranker on all historical data up to (but not including) today's date, then scores today's VN100 universe.
+The main inference function. If no pretrained `model` is passed, trains a fresh XGBoost ranker on all historical data up to (but not including) today's date, then scores today's VN universe.
 
 **Signal generation logic:**
 
 1. **Portfolio review** — For each currently held symbol:
-   - If not in today's VN100 → `NOT_VN100`
+   - If not in today's VN → `NOT_IN_UNIVERSE`
    - If rank > `buy_n` → `SELL`
    - Otherwise → `HOLD`
 
@@ -624,7 +624,7 @@ The main inference function. If no pretrained `model` is passed, trains a fresh 
 | `use_mega` | `False` | Not yet implemented — raises `NotImplementedError` if `True` |
 | `model` | `None` | Pass a pretrained `XGBRanker` to skip training (used by the dashboard) |
 
-**Returns:** `(buy_list, hold_list, sell_list, not_vn100_list, ranked_today_df)`
+**Returns:** `(buy_list, hold_list, sell_list, not_in_universe_list, ranked_today_df)`
 
 where `ranked_today_df` has columns `Symbol`, `live_score`, `rank`.
 
@@ -639,7 +639,7 @@ Thin wrapper around `generate_paper_trade_signals` that returns a clean dictiona
     "BUY": [...],
     "HOLD": [...],
     "SELL": [...],
-    "NOT_VN100": [...],
+    "NOT_IN_UNIVERSE": [...],
     "Rankings": DataFrame
 }
 ```
