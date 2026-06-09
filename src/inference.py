@@ -19,7 +19,7 @@ def generate_paper_trade_signals(
     Applies a grace band (hold_n) for existing positions and a trend filter for new buys.
     
     Parameters:
-    - df: Full DataFrame containing features, dates, and the VN100 universe.
+    - df: Full DataFrame containing features, dates, and the VN universe.
     - current_portfolio: List of stock symbols currently held (e.g., ['VNM', 'FPT']).
     - features: List of feature column names.
     - use_mega: Boolean flag to switch between XGBoost (False) and LSTM (True).
@@ -32,7 +32,7 @@ def generate_paper_trade_signals(
     - buy_list: Symbols to buy.
     - hold_list: Symbols to keep holding.
     - sell_list: Symbols to sell.
-    - not_vn100_list: Symbols held but no longer in today's VN100 dataset.
+    - not_in_universe_list: Symbols held but no longer in today's VN dataset.
     - ranked_today: DataFrame containing today's scores and ranks.
     """
     
@@ -47,7 +47,7 @@ def generate_paper_trade_signals(
         raise ValueError(f"No data available for inference on {latest_date}")
 
     
-    current_vn100 = inference_df['Symbol'].unique().tolist()
+    current_universe = inference_df['Symbol'].unique().tolist()
 
     # 3. Model Training & Scoring
     if not use_mega:
@@ -86,18 +86,18 @@ def generate_paper_trade_signals(
     sell_list = []
     hold_list = []
     buy_list = []
-    not_vn100_list = []
+    not_in_universe_list = []
 
     # 5. Evaluate Current Portfolio (SELL vs HOLD based on grace band)
     for sym in current_portfolio:
-        if sym not in current_vn100:
-            not_vn100_list.append(sym)
+        if sym not in current_universe:
+            not_in_universe_list.append(sym)
             continue  # Skip further rank checking, move to the next stock
             
         stock_rank = rank_dict.get(sym)
         
         # We technically won't hit this None check often now because we already filtered 
-        # out symbols not in current_vn100, but it's good defensive programming.
+        # out symbols not in current_universe, but it's good defensive programming.
         if stock_rank is None:
             sell_list.append(sym)
         elif stock_rank > buy_n:
@@ -130,10 +130,10 @@ def generate_paper_trade_signals(
     print(f"SELL ({len(sell_list)}): {sell_list}")
     print(f"HOLD ({len(hold_list)}): {hold_list}")
     print(f"BUY  ({len(buy_list)}): {buy_list} (Strict top <= {buy_n} + Trend > {trend_filter_threshold})")
-    if not_vn100_list:
-        print(f"NOT VN100 ({len(not_vn100_list)}): {not_vn100_list} (Held but missing from today's data)")
+    if not_in_universe_list:
+        print(f"NOT IN UNIVERSE ({len(not_in_universe_list)}): {not_in_universe_list} (Held but missing from today's data)")
     
-    return buy_list, hold_list, sell_list, not_vn100_list, ranked_today[['Symbol', 'live_score', 'rank']]
+    return buy_list, hold_list, sell_list, not_in_universe_list, ranked_today[['Symbol', 'live_score', 'rank']]
 
 
 def get_actionable_portfolio_lists(
@@ -146,7 +146,7 @@ def get_actionable_portfolio_lists(
     Wrapper function that calls generate_paper_trade_signals and formats 
     the output into a clean dictionary for the user or UI.
     """
-    buys, holds, sells, non_vn100, ranks_df = generate_paper_trade_signals(
+    buys, holds, sells, non_universe, ranks_df = generate_paper_trade_signals(
         df=df, 
         current_portfolio=current_portfolio, 
         features=features, 
@@ -157,6 +157,6 @@ def get_actionable_portfolio_lists(
         "BUY": buys,
         "HOLD": holds,
         "SELL": sells,
-        "NOT_VN100": non_vn100,
+        "NOT_IN_UNIVERSE": non_universe,
         "Rankings": ranks_df
     }

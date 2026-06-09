@@ -1,6 +1,6 @@
-# 📈 VN100 Cross-Sectional Ranking System
+# 📈 VN Cross-Sectional Ranking System
 
-> A machine learning pipeline that ranks Vietnamese stocks in the VN100 universe by predicted forward returns, and generates actionable paper-trading signals through an interactive Streamlit dashboard.
+> A machine learning pipeline that ranks Vietnamese stocks in the VN universe by predicted forward returns, and generates actionable paper-trading signals through an interactive Streamlit dashboard.
 
 [![Live App](https://img.shields.io/badge/🚀%20Live%20App-Streamlit-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white)](https://cross-sectional-ranking-vn.streamlit.app/)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
@@ -12,9 +12,9 @@
 
 ## 🧠 Project Overview
 
-The Vietnamese stock market (VN100 universe) presents unique challenges: a relatively small investable universe of ~100 liquid stocks, a fixed 21-trading-day rebalancing cadence (matching the target return horizon) aligned with local liquidity patterns, and limited availability of fundamental data from Western providers. These constraints make **cross-sectional ranking** a more tractable approach than absolute price prediction.
+The Vietnamese stock market (VN universe) presents unique challenges: a relatively small investable universe of ~300 liquid stocks, a fixed 21-trading-day rebalancing cadence (matching the target return horizon) aligned with local liquidity patterns, and limited availability of fundamental data from Western providers. These constraints make **cross-sectional ranking** a more tractable approach than absolute price prediction.
 
-Instead of forecasting where a stock's price will go, this system answers a simpler question: *which stocks are likely to outperform the others next month?* The model ranks all stocks in the VN100 universe daily by expected relative performance, and flags the top-ranked as Buy signals.
+Instead of forecasting where a stock's price will go, this system answers a simpler question: *which stocks are likely to outperform the others next month?* The model ranks all stocks in the VN universe daily by expected relative performance, and flags the top-ranked as Buy signals.
 
 The core production model is an **XGBoost LambdaRank** (`rank:ndcg`), trained using walk-forward cross-validation to simulate real-world out-of-sample performance. An **AlphaForge-style factor combiner** (Ridge regression with dynamic IC-based factor gating) was also explored but found to be unstable out-of-sample — see [Model Architecture](#-model-architecture) for the full comparison.
 
@@ -34,7 +34,7 @@ project/
 │   ├── 03_Model_Training.ipynb               # Walk-forward CV, Optuna tuning
 │   └── 04_Backtesting_and_Evaluation.ipynb   # Backtest engine, metrics, model comparison
 ├── src/
-│   ├── data_collect.py       # VN100 universe construction & incremental data fetching
+│   ├── data_collect.py       # VN universe construction & incremental data fetching
 │   ├── features.py           # Technical feature engineering (RSI, MA, volatility, etc.)
 │   ├── alpha_mining.py       # WorldQuant-style alpha factors & GP alpha search
 │   ├── feature_search.py     # Feature group combination search (optimise ROI / Sharpe)
@@ -53,7 +53,7 @@ project/
 
 ## ✨ Key Features
 
-- **VN100 Universe Construction** — Automatically combines VN30 + VNMidCap from the VCI data source via `vnstock`.
+- **VN Universe Construction** — Automatically combines VN30 + VNMidCap from the VCI data source via `vnstock`.
 - **Incremental Data Updates** — Smart incremental fetching: only downloads new trading days, skipping up-to-date symbols.
 - **Rich Feature Set** — Multi-horizon log returns (1W/1M/3M/6M/1Y), volume surge ratios, annualised volatility, RSI-14, SMA/EMA distances (9/21/50/100/200), 52-week high distance, skip-1M return, OBV trend, price-volume divergence, and WorldQuant-style alpha factors (Alpha #001, #002, #006, #007, #013, #016, #024, #028, #040, #101, #103, #200, #201, #202). The active production feature set is defined in `config.py` (`final_features`).
 - **Feature Group Search** — `feature_search.py` exhaustively evaluates all combinations of feature groups to find the configuration that maximises ROI or Sharpe ratio (up to 127 combinations across 7 groups).
@@ -61,7 +61,7 @@ project/
 - **Walk-Forward Validation** — Simulates live deployment; avoids look-ahead bias with a strict 21-day gap between train and test periods (24-month training window, 6-month test window).
 - **IC Analysis** — Evaluates each feature's Information Coefficient (Spearman rank correlation) against future returns, both aggregate and time-series IC IR.
 - **Realistic Backtest Engine** — Simulates VN-market T+3 settlement, fixed 21-trading-day rebalancing (aligned to the `shift(-21)` target horizon), trailing stops, take-profit rules, and transaction costs.
-- **Live Signal Engine** — Produces daily Buy / Hold / Sell / Not-VN100 signals with a configurable top-N band and trend filter.
+- **Live Signal Engine** — Produces daily Buy / Hold / Sell / NOT_IN_UNIVERSE signals with a configurable top-N band and trend filter.
 - **Streamlit Dashboard** — Interactive UI for backtesting, signal viewing, feature importance, IC charts, and Gemini-powered AI commentary.
 - **Experimental: AlphaForge Factor Combiner** — Implements AlphaForge Algorithm 2: dynamic Ridge regression with rolling RankIC/ICIR factor gating. Enable with `model='alphaforge'` in `walk_forward_cv`. Found to underperform the XGBoost baseline out-of-sample. Retained in the codebase for research purposes only.
 - **Experimental: GP Alpha Mining** — Uses genetic programming (`gplearn`) to evolve new alpha expressions from base features. Enable with `use_gp=True`.
@@ -115,7 +115,7 @@ All results are **out-of-sample** from walk-forward cross-validation (24-month i
 **🔗 [https://cross-sectional-ranking-vn.streamlit.app/](https://cross-sectional-ranking-vn.streamlit.app/)**
 
 The dashboard lets you:
-- Run backtests interactively on the VN100 universe
+- Run backtests interactively on the VN universe
 - View today's Buy / Hold / Sell signals in real time
 - Explore feature importance and IC charts
 - Get AI-powered market commentary via Gemini
@@ -126,8 +126,8 @@ The dashboard lets you:
 
 ```bash
 # Clone the repository
-git clone https://github.com/phamhuyphong-quant/Cross_Sectional_Rank_VN100.git
-cd Cross_Sectional_Rank_VN100
+git clone https://github.com/phamhuyphong-quant/Cross_Sectional_Rank_VN.git
+cd Cross_Sectional_Rank_VN
 
 # Install dependencies
 pip install -r requirements.txt
@@ -263,7 +263,7 @@ Or run `notebooks/04_Backtesting_and_Evaluation.ipynb`.
 ```python
 from src.inference import generate_paper_trade_signals
 
-buy, hold, sell, not_vn100, rankings = generate_paper_trade_signals(
+buy, hold, sell, not_in_universe, rankings = generate_paper_trade_signals(
     df=df,
     current_portfolio=['VNM', 'FPT', 'HPG'],
     features=final_features,
@@ -281,7 +281,7 @@ The dashboard is **cloud-hosted** — access it directly at the link above. It i
 ## 📊 Model Architecture
 
 ```
-Raw OHLCV Data (VN100 universe, daily, from 2018)
+Raw OHLCV Data (VN universe, daily, from 2018)
       │
       ▼
 Feature Engineering (src/features.py + src/alpha_mining.py)
@@ -338,7 +338,7 @@ Daily Cross-Sectional Ranking → Buy / Hold / Sell Signals (src/inference.py)
 | 🟢 **BUY** | Ranks in top `buy_n` (default: 30) AND `dist_SMA_100 > 1.0` (trend filter) AND not already held |
 | 🔵 **HOLD** | Currently held AND ranks within top `buy_n` |
 | 🟠 **SELL** | Currently held BUT falls outside the `buy_n` threshold |
-| 🔴 **NOT VN100** | Currently held BUT no longer in today's VN100 universe |
+| 🔴 **NOT IN UNIVERSE** | Currently held BUT no longer in today's VN universe |
 
 ---
 

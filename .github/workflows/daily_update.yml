@@ -1,4 +1,4 @@
-name: Daily VN100 Data Update
+name: Daily VN Data Update
 
 on:
   schedule:
