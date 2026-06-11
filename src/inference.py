@@ -3,6 +3,7 @@ import xgboost as xgb
 import sys,os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from config import BASE_MODEL_PARAMS
+from src.models import select_features_by_icir, prune_correlated_features, _compute_icir_map
 def generate_paper_trade_signals(
     df: pd.DataFrame, 
     current_portfolio: list, 
@@ -12,7 +13,12 @@ def generate_paper_trade_signals(
     buy_n: int = 30,  
     trend_filter_col: str = 'dist_SMA_100',
     trend_filter_threshold: float = 1.0,
-    target_col: str = 'target_quintile'
+    target_col: str = 'target_quintile',
+    icir_filter: bool = False,
+    icir_threshold: float = 0.02,
+    icir_target_col: str = 'next_1m_ret',
+    corr_prune: bool = False,
+    corr_threshold: float = 0.75,
 ):
     """
     Generates Buy, Hold, and Sell signals mirroring walk-forward logic.
@@ -49,6 +55,30 @@ def generate_paper_trade_signals(
     
     current_universe = inference_df['Symbol'].unique().tolist()
 
+    _ic_ir_map: dict = {}
+
+    if icir_filter:
+        features, _ic_ir_map = select_features_by_icir(
+            train_df, features,
+            icir_threshold=icir_threshold,
+            target_col=icir_target_col,
+        )
+        print(f"   🔍 IC/IR filter: {len(features)} features selected.")
+
+    if corr_prune and len(features) > 1:
+        from src.feature_search import FEATURE_GROUPS
+        # Reuse the ic_ir_map already computed by the icir filter if available;
+        # otherwise compute it now (corr_prune=True but icir_filter=False).
+        if not _ic_ir_map:
+            _ic_ir_map = _compute_icir_map(train_df, features, icir_target_col)
+        features = prune_correlated_features(
+            df=train_df,
+            candidate_features=features,
+            ic_ir_map=_ic_ir_map,
+            feature_groups=FEATURE_GROUPS,
+            correlation_threshold=corr_threshold,
+        ) or features[:1]
+        print(f"   ✂️  Correlation pruning: {len(features)} features kept (threshold={corr_threshold}).")
     # 3. Model Training & Scoring
     if not use_mega:
         if model is not None:

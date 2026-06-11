@@ -10,6 +10,215 @@ import gc
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from src.deep_combiner import AlphaForgeCombiner
+def select_features_by_icir(
+    df: pd.DataFrame,
+    candidate_features: list[str],
+    icir_threshold: float = 0.02,
+    target_col: str = "next_1m_ret",
+) -> tuple[list[str], dict[str, float]]:
+    """
+    Computes IC/IR for each candidate feature on the given df (which should be
+    all data available up to — but NOT including — the test window), then returns
+    only the features whose |IC IR| exceeds the threshold.
+
+    IC  = per-date Spearman rank correlation between feature and forward return.
+    IR  = IC_mean / IC_std  (risk-adjusted signal quality).
+
+    Vectorized implementation: ranks all features and the target within each
+    date in a single groupby pass, then computes Pearson correlation on those
+    ranks (== Spearman) via corrwith — no per-feature scipy loop.
+
+    Parameters
+    ----------
+    df                  : Training-window data (no future rows).
+    candidate_features  : Full list of features to evaluate.
+    icir_threshold      : Minimum |IC IR| to keep a feature (default 0.02).
+    target_col          : Forward-return column used as the prediction target.
+
+    Returns
+    -------
+    selected  : List of features that survive the |IC IR| > icir_threshold filter.
+    ic_ir_map : Dict of {feature: ic_ir_value} for ALL valid features — returned
+                as a free byproduct so callers (e.g. corr_prune) never need to
+                recompute it.
+    """
+    df_ic  = df.dropna(subset=[target_col]).copy()
+    valid  = [f for f in candidate_features if f in df_ic.columns]
+
+    if not valid:
+        return [], {}
+
+    cols        = valid + [target_col]
+    # Rank within each date in one vectorized pass (Pearson on ranks == Spearman)
+    ranked      = df_ic[["date"] + cols].copy()
+    ranked[cols] = (
+        ranked.groupby("date")[cols]
+        .rank(method="average")
+    )
+
+    # Per-date IC for every feature at once via corrwith
+    ic_by_date = (
+        ranked.groupby("date")[cols]
+        .apply(lambda g: g.drop(columns="date", errors="ignore")
+                          .corrwith(g[target_col]),
+               include_groups=False)
+        .drop(columns=target_col, errors="ignore")
+        .dropna(how="all")
+    )
+
+    ic_mean   = ic_by_date.mean()
+    ic_std    = ic_by_date.std()
+    ic_ir_s   = (ic_mean / ic_std.replace(0.0, float("nan"))).fillna(0.0)
+    ic_ir_map = ic_ir_s.to_dict()
+
+    # A feature needs >= 2 valid IC dates to have a stable IR
+    valid_counts = ic_by_date.count()
+    selected = [
+        f for f in valid
+        if valid_counts.get(f, 0) >= 2 and abs(ic_ir_map.get(f, 0.0)) > icir_threshold
+    ]
+
+    return selected, ic_ir_map
+
+
+def _compute_icir_map(
+    df: pd.DataFrame,
+    features: list[str],
+    target_col: str = "next_1m_ret",
+) -> dict[str, float]:
+    """
+    Helper: compute IC IR for each feature on the given df.
+    Returns {feature: ic_ir_value}.  Features with fewer than 2 valid
+    IC dates get ic_ir = 0.0 (they will be pruned first if correlated).
+
+    Vectorized implementation: ranks all features and the target within each
+    date in a single groupby pass, then computes Pearson correlation on those
+    ranks (== Spearman) via corrwith — no per-feature scipy loop.
+    """
+    df_ic = df.dropna(subset=[target_col]).copy()
+    valid = [f for f in features if f in df_ic.columns]
+
+    ic_ir_map: dict[str, float] = {f: 0.0 for f in features}
+    if not valid:
+        return ic_ir_map
+
+    cols         = valid + [target_col]
+    ranked       = df_ic[["date"] + cols].copy()
+    ranked[cols] = ranked.groupby("date")[cols].rank(method="average")
+
+    ic_by_date = (
+        ranked.groupby("date")[cols]
+        .apply(lambda g: g.drop(columns="date", errors="ignore")
+                          .corrwith(g[target_col]),
+               include_groups=False)
+        .drop(columns=target_col, errors="ignore")
+        .dropna(how="all")
+    )
+
+    ic_mean        = ic_by_date.mean()
+    ic_std         = ic_by_date.std()
+    ic_ir_s        = (ic_mean / ic_std.replace(0.0, float("nan"))).fillna(0.0)
+    valid_counts   = ic_by_date.count()
+
+    for f in valid:
+        ic_ir_map[f] = ic_ir_s.get(f, 0.0) if valid_counts.get(f, 0) >= 2 else 0.0
+
+    return ic_ir_map
+
+
+def prune_correlated_features(
+    df: pd.DataFrame,
+    candidate_features: list[str],
+    ic_ir_map: dict[str, float],
+    feature_groups: dict[str, list[str]] | None = None,
+    correlation_threshold: float = 0.75,
+) -> list[str]:
+    """
+    Removes redundant features using Spearman correlation pruning — mirrors the
+    notebook-02 logic but operates only on training-window data so there is
+    zero look-ahead bias.
+
+    For every pair of features within the same group whose |Spearman correlation|
+    >= correlation_threshold, the feature with the lower |IC IR| is dropped.
+    Features that do not belong to any group are treated as their own singleton
+    group (never pruned against each other).
+
+    Parameters
+    ----------
+    df                    : Training-window data used to compute the correlation matrix.
+    candidate_features    : Features to evaluate (already IC/IR-filtered is fine).
+    ic_ir_map             : Dict mapping feature name → IC IR value (from
+                            select_features_by_icir or pre-computed).
+    feature_groups        : Optional dict of {group_name: [feat, ...]} that defines
+                            which features compete against each other.  If None,
+                            all candidate_features are treated as one group.
+    correlation_threshold : |Spearman corr| >= this → drop the weaker feature.
+
+    Returns
+    -------
+    List of features that survive pruning, preserving input order.
+    """
+    from scipy.stats import spearmanr
+
+    present = [f for f in candidate_features if f in df.columns]
+    if len(present) < 2:
+        return present
+
+    # Compute Spearman correlation matrix on the training window (drop NaN rows
+    # to keep it well-defined; use the same approach as the notebook).
+    df_clean = df[present].dropna()
+    if df_clean.shape[0] < 2:
+        return present
+
+    corr_matrix, _ = spearmanr(df_clean)
+    if corr_matrix.ndim == 0:
+        # Only one feature after dropna — nothing to prune
+        return present
+
+    # Use a numpy array + integer index map for fast inner-loop lookups
+    # (avoids repeated pandas label-based .loc[] on every pair)
+    corr_arr = np.abs(np.asarray(corr_matrix))
+    feat_idx = {f: i for i, f in enumerate(present)}
+
+    # Build group membership: each feature belongs to exactly one group.
+    # Features absent from every group get a private singleton group.
+    if feature_groups is None:
+        groups_to_check = {"all": present}
+    else:
+        feat_to_group: dict[str, str] = {}
+        for gname, gfeats in feature_groups.items():
+            for f in gfeats:
+                if f in feat_idx:
+                    feat_to_group[f] = gname
+
+        groups_to_check: dict[str, list[str]] = {}
+        for f in present:
+            g = feat_to_group.get(f, f"__singleton_{f}")
+            groups_to_check.setdefault(g, []).append(f)
+
+    # Pre-build IC/IR array indexed the same way as corr_arr
+    ir_arr  = np.array([abs(ic_ir_map.get(f, 0.0)) for f in present])
+    to_drop: set[str] = set()
+
+    for group_name, group_feats in groups_to_check.items():
+        group_feats = [f for f in group_feats if f in feat_idx]
+        for i in range(len(group_feats)):
+            if group_feats[i] in to_drop:
+                continue
+            ii = feat_idx[group_feats[i]]
+            for j in range(i + 1, len(group_feats)):
+                feat_j = group_feats[j]
+                if feat_j in to_drop:
+                    continue
+                jj = feat_idx[feat_j]
+                if corr_arr[ii, jj] >= correlation_threshold:
+                    drop = feat_j if ir_arr[ii] >= ir_arr[jj] else group_feats[i]
+                    to_drop.add(drop)
+
+    pruned = [f for f in present if f not in to_drop]
+    return pruned
+
+
 def test_train_spliter(df, test_start, features):
     df = df.copy()
     
@@ -366,6 +575,13 @@ def walk_forward_cv(
     test_months: int = 6,
     gap_days: int = 21,
     use_gp: bool = False,
+    # --- Per-fold IC/IR feature filter (no look-ahead bias) ---
+    icir_filter: bool = False,
+    icir_threshold: float = 0.02,
+    icir_target_col: str = "next_1m_ret",
+    # --- Per-fold correlation pruning (applied after IC/IR filter) ---
+    corr_prune: bool = False,
+    corr_threshold: float = 0.75,
     # --- Liquidity filter (mirrors simulate_portfolio) ---
     liquidity_filter: bool = False,
     capital: float = 100_000,
@@ -379,21 +595,37 @@ def walk_forward_cv(
       "xgboost"    → XGBRanker on hand-crafted + optional GP features
       "alphaforge" → AlphaForgeCombiner Mega-Alpha as sole ranking signal
 
+    Per-fold IC/IR feature filter (optional, zero look-ahead)
+    ----------------------------------------------------------
+    When icir_filter=True, feature selection is re-run at the start of
+    every fold using only the data in fold.train_df (i.e. all rows up to
+    the train cutoff for that fold).  This guarantees:
+      - No future return information leaks into feature selection.
+      - The feature set adapts over time as signal quality evolves.
+      - Early folds with less history use whatever data is available;
+        features with fewer than 2 valid IC dates are excluded.
+
+    The filter evaluates every feature in `features` (+ GP columns if
+    use_gp=True) and keeps only those with |IC IR| > icir_threshold.
+    At least one feature is always kept (the highest |IC IR| feature)
+    to avoid passing an empty feature list to the model.
+
+    Per-fold correlation pruning (optional, zero look-ahead)
+    ---------------------------------------------------------
+    When corr_prune=True, a second pruning step runs after the IC/IR
+    filter (or directly on the full candidate pool if icir_filter=False).
+    For every pair of features within the same FEATURE_GROUPS group whose
+    |Spearman correlation| >= corr_threshold (default 0.75), the feature
+    with the lower |IC IR| is dropped.  This mirrors the notebook-02
+    logic but is computed purely on fold.train_df so there is zero
+    look-ahead bias.  corr_prune=True automatically requires the IC IR
+    values to be computed; if icir_filter=False they are computed
+    internally just for tie-breaking.
+
     Liquidity filter (optional, mirrors simulate_portfolio)
     -------------------------------------------------------
     When liquidity_filter=True, the ADTV filter is applied *per fold*
     inside generate_folds(), not upfront on the whole dataframe.
-
-    This means:
-      - A stock illiquid in fold N can still appear in fold N+k once its
-        volume recovers (IPO lock-up expiry, re-listing, sustained growth).
-      - ADTV for each fold is computed from history available up to that
-        fold's dates only — no future volume leaks backward.
-      - The initial training window is also filtered, so the model is
-        never trained on stocks it couldn't have traded at that time.
-
-    Pass the same capital / buy_fraction / adtv_participation values
-    you use in simulate_portfolio so the filter is identical in both places.
 
     Adding a new model: implement predict_<name>(fold, ...) → pd.DataFrame
     and add an elif branch below.
@@ -435,15 +667,79 @@ def walk_forward_cv(
 
     print("🚀 Starting walk-forward fold loop...")
     for fold in folds:
+
+        # ── Per-fold IC/IR feature selection (bias-free) ──────────────────
+        # Uses only fold.train_df — all rows from the start of history up
+        # to this fold's train cutoff.  No test-window data is ever seen.
+        #
+        # select_features_by_icir returns (selected, ic_ir_map) together as
+        # a free byproduct of the same vectorized pass, so corr_prune can
+        # reuse it directly — no second compute regardless of which filters
+        # are active.
+        candidate_pool = list(features) + gp_cols
+
+        if icir_filter:
+            fold_selected, _ic_ir_map = select_features_by_icir(
+                df=fold.train_df,
+                candidate_features=candidate_pool,
+                icir_threshold=icir_threshold,
+                target_col=icir_target_col,
+            )
+            # Safety: never pass an empty list to the model
+            if not fold_selected:
+                fold_selected = candidate_pool[:1]
+                print(
+                    f"   ⚠️  Fold {fold.fold_number}: no feature passed |IC IR| > "
+                    f"{icir_threshold}; keeping {fold_selected[0]!r} as fallback."
+                )
+            else:
+                print(
+                    f"   🔍 Fold {fold.fold_number}: {len(fold_selected)}/{len(candidate_pool)} "
+                    f"features selected by IC/IR filter."
+                )
+            fold_features = fold_selected
+        elif corr_prune:
+            # corr_prune=True but icir_filter=False: keep all features but
+            # still need ic_ir_map for tie-breaking — compute it once here.
+            fold_features = candidate_pool
+            _ic_ir_map    = _compute_icir_map(
+                fold.train_df, fold_features, icir_target_col
+            )
+        else:
+            fold_features = candidate_pool
+
+        # ── Per-fold correlation pruning (bias-free) ───────────────────────
+        # Removes redundant features whose |Spearman corr| >= corr_threshold
+        # within the same feature group, keeping the higher |IC IR| one.
+        # Computed on fold.train_df only — zero look-ahead.
+        # _ic_ir_map is guaranteed to exist here whenever corr_prune=True
+        # (set by whichever branch above was active).
+        if corr_prune and len(fold_features) > 1:
+            from src.feature_search import FEATURE_GROUPS as _FG
+
+            pruned = prune_correlated_features(
+                df=fold.train_df,
+                candidate_features=fold_features,
+                ic_ir_map=_ic_ir_map,
+                feature_groups=_FG,
+                correlation_threshold=corr_threshold,
+            )
+            n_before = len(fold_features)
+            fold_features = pruned if pruned else fold_features[:1]
+            print(
+                f"   ✂️  Fold {fold.fold_number}: correlation pruning "
+                f"{n_before} → {len(fold_features)} features "
+                f"(threshold={corr_threshold})."
+            )
+
         if model == "alphaforge":
             test_df    = predict_alphaforge(fold, alpha_pool)
             path_label = "AlphaForge (Mega)"
         elif model == "xgboost":
-            xgb_features = list(features) + gp_cols
-            test_df      = predict_xgboost(fold, xgb_features, model_params)
-            path_label   = "XGBoost"
+            test_df    = predict_xgboost(fold, fold_features, model_params)
+            path_label = "XGBoost"
         # elif model == "lightgbm":
-        #     test_df = predict_lightgbm(fold, features, model_params)
+        #     test_df = predict_lightgbm(fold, fold_features, model_params)
         else:
             raise ValueError(f"Unknown model: {model!r}")
 

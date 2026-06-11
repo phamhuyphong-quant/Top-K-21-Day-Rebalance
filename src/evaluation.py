@@ -681,7 +681,7 @@ def pretrain_and_save_artifacts(
     use_mega_alpha: bool = False,
     output_dir: str = "data/pretrained/",
     vnindex_df: pd.DataFrame | None = None,
-) -> tuple[str, str, str]:
+) -> tuple[str, str]:
    
     """
     Runs the full walk-forward CV and backtest once, then saves all artifacts to disk
@@ -697,7 +697,6 @@ def pretrain_and_save_artifacts(
     Returns:
     - predictions_path: Path to pretrained_predictions.parquet
     - equity_curve_path: Path to pretrained_equity_curve.parquet
-    - final_model_path: Path to pretrained_model.json
     """
     print("🚀 Starting Pre-training Walk-Forward CV...")
     
@@ -707,23 +706,30 @@ def pretrain_and_save_artifacts(
     # 1. Run the heavy Walk-Forward CV
     honest_test_df = walk_forward_cv(
         df=df, 
-        features=selected_features, 
+        model_params=BASE_MODEL_PARAMS,
+        features=selected_features,
+        use_gp=False, 
+        liquidity_filter=False,
+        icir_filter=True,
+        corr_prune=True,
         initial_train_months=24, 
         test_months=6, 
-        gap_days=21,
-        use_gp=False
+        gap_days=21
     )
     
     # 2. Run the Backtest logic to get the Equity Curve
     print("📈 Running Backtest on OOS results...")
     result = simulate_portfolio(
-        df=honest_test_df, 
         model=None, 
         features=None,
+        df=honest_test_df, 
         initial_capital=100000,
-        buy_fraction=0.20,
+        buy_fraction=0.2,
+        settlement_delay=3,
         time_of_rebalance='M', 
-        trend_filter_col='dist_SMA_100'
+        liquidity_filter=True,
+        vnindex_df=vnindex_df,
+        allocation='rank_weighted'
     )
 
     final_model = xgb.XGBRanker(**BASE_MODEL_PARAMS)
@@ -738,11 +744,9 @@ def pretrain_and_save_artifacts(
     # 3. Save the critical artifacts to Parquet (much faster than CSV)
     predictions_path  = os.path.join(output_dir, "pretrained_predictions.parquet")
     equity_curve_path = os.path.join(output_dir, "pretrained_equity_curve.parquet")
-    final_model_path  = os.path.join(output_dir, "pretrained_model.json")
     keep_cols = ['date', 'Symbol', 'pred_score', 'pred_quintile', 'target_quintile', 'next_1m_ret']
     honest_test_df = honest_test_df[[c for c in keep_cols if c in honest_test_df.columns]]
     honest_test_df.to_parquet(predictions_path, index=False)
     result.to_parquet(equity_curve_path, index=False)
-    final_model.save_model(final_model_path)
     print(f"✅ Success! Artifacts saved to {output_dir}")
-    return predictions_path, equity_curve_path, final_model_path
+    return predictions_path, equity_curve_path

@@ -30,7 +30,7 @@ A regression model trained on raw returns tries to predict exact magnitudes — 
 project/
 ├── notebooks/
 │   ├── 01_Data_Collection.ipynb
-│   ├── 02_Feature_Engineering.ipynb          # Feature engineering + feature group search
+│   ├── 02_Feature_EDA.ipynb                  # Feature EDA — IC/IR analysis, correlation heatmap
 │   ├── 03_Model_Training.ipynb               # Walk-forward CV, Optuna tuning
 │   └── 04_Backtesting_and_Evaluation.ipynb   # Backtest engine, metrics, model comparison
 ├── src/
@@ -45,7 +45,7 @@ project/
 │   └── app.py                # Streamlit dashboard
 ├── kaggle_kernel/            # Kaggle kernel scripts for GPU-accelerated training
 ├── .github/workflows/        # GitHub Actions: daily updates, precompute, keep-alive
-├── config.py                 # final_features and candidate_features definitions
+├── config.py                 # candidate_features (operative pool) and final_features (legacy static reference) definitions
 └── requirements.txt
 ```
 
@@ -55,11 +55,12 @@ project/
 
 - **VN Universe Construction** — Automatically combines VN30 + VNMidCap from the VCI data source via `vnstock`.
 - **Incremental Data Updates** — Smart incremental fetching: only downloads new trading days, skipping up-to-date symbols.
-- **Rich Feature Set** — Multi-horizon log returns (1W/1M/3M/6M/1Y), volume surge ratios, annualised volatility, RSI-14, SMA/EMA distances (9/21/50/100/200), 52-week high distance, skip-1M return, OBV trend, price-volume divergence, and WorldQuant-style alpha factors (Alpha #001, #002, #006, #007, #013, #016, #024, #028, #040, #101, #103, #200, #201, #202). The active production feature set is defined in `config.py` (`final_features`).
+- **Rich Feature Set** — Multi-horizon log returns (1W/1M/3M/6M/1Y), volume surge ratios, annualised volatility, RSI-14, SMA/EMA distances (9/21/50/100/200), 52-week high distance, skip-1M return, OBV trend, price-volume divergence, and WorldQuant-style alpha factors (Alpha #001, #002, #006, #007, #013, #016, #024, #028, #040, #101, #103, #200, #201, #202). The full candidate pool is defined in `config.py` (`candidate_features`); per-fold IC/IR filtering selects the active subset at runtime inside `walk_forward_cv`.
 - **Feature Group Search** — `feature_search.py` exhaustively evaluates all combinations of feature groups to find the configuration that maximises ROI or Sharpe ratio (up to 127 combinations across 7 groups).
 - **XGBoost LambdaRank** — Optimises NDCG directly for ranking quality rather than regression error. Selected as the production model after comparative experiments.
 - **Walk-Forward Validation** — Simulates live deployment; avoids look-ahead bias with a strict 21-day gap between train and test periods (24-month training window, 6-month test window).
 - **IC Analysis** — Evaluates each feature's Information Coefficient (Spearman rank correlation) against future returns, both aggregate and time-series IC IR.
+- **Correlation Pruning** — Within each feature group, removes the weaker of any highly-correlated pair (|Spearman corr| ≥ 0.75, keeping the higher |IC IR| feature). Mirrors notebook 02's exploratory step but runs per-fold inside `walk_forward_cv` and `generate_paper_trade_signals` on training data only, so there is zero look-ahead bias.
 - **Realistic Backtest Engine** — Simulates VN-market T+3 settlement, fixed 21-trading-day rebalancing (aligned to the `shift(-21)` target horizon), trailing stops, take-profit rules, and transaction costs.
 - **Live Signal Engine** — Produces daily Buy / Hold / Sell / NOT_IN_UNIVERSE signals with a configurable top-N band and trend filter.
 - **Streamlit Dashboard** — Interactive UI for backtesting, signal viewing, feature importance, IC charts, and Gemini-powered AI commentary.
@@ -70,43 +71,35 @@ project/
 
 ## 📊 Backtest Results
 
-All results are **out-of-sample** from walk-forward cross-validation (24-month initial training window, 6-month test windows, 21-day gap). No look-ahead bias — each fold trains strictly on past data. Backtest period: **January 2021 → April 2026**.
+All results are **out-of-sample** from walk-forward cross-validation (24-month initial training window, 6-month test windows, 21-day gap). No look-ahead bias — each fold trains strictly on past data. Backtest period: **January 2019 → May 2026**.
 
 ### Production Model: XGBoost LambdaRank (Baseline)
 
 | Metric | Value |
 |---|---|
-| Avg OOS NDCG | **0.840** |
-| Top 20% Win Rate | **55.54%** |
-| Market Baseline Win Rate | 53.47% |
-| Excess Win Rate | **+2.07%** |
-| Total Return | **+154.01%** |
-| CAGR | **+19.43%** |
-| Sharpe Ratio | **0.96** |
-| Sortino Ratio | **1.81** |
-| Calmar Ratio | **0.91** |
-| Max Drawdown | **-21.40%** |
-| Monthly Win Rate | **63.49%** |
-| Profit Factor | **2.88** |
+| Total Return | **+148.53%** |
+| CAGR | **+13.38%** |
+| Sharpe Ratio | **0.47** |
+| Sortino Ratio | **0.67** |
+| Calmar Ratio | **0.39** |
+| Max Drawdown | **-34.53%** |
+| Monthly Win Rate | **57.47%** |
+| Profit Factor | **1.76** |
 
-### Experimental Model: XGBoost + AlphaForge Factor Combiner
+### Experimental Model: AlphaForge Factor Combiner
 
 | Metric | Value |
 |---|---|
-| Avg OOS NDCG | **0.839** |
-| Top 20% Win Rate | 55.05% |
-| Market Baseline Win Rate | 53.47% |
-| Excess Win Rate | **+1.58%** |
-| Total Return | +131.78% |
-| CAGR | +17.37% |
-| Sharpe Ratio | 0.81 |
-| Sortino Ratio | 1.56 |
-| Calmar Ratio | 0.84 |
-| Max Drawdown | -20.61% |
-| Monthly Win Rate | 58.73% |
-| Profit Factor | 2.55 |
+| Total Return | +135.72% |
+| CAGR | +12.55% |
+| Sharpe Ratio | 0.38 |
+| Sortino Ratio | 0.42 |
+| Calmar Ratio | 0.29 |
+| Max Drawdown | -42.86% |
+| Monthly Win Rate | 48.28% |
+| Profit Factor | 1.49 |
 
-> **Why XGBoost wins:** Although the AlphaForge combiner showed marginally lower max drawdown, its risk-adjusted return profile (Sharpe 0.81, Sortino 1.56) was consistently weaker than the XGBoost baseline (Sharpe 0.96, Sortino 1.81). The AlphaForge model also underperformed on total return (+131.78% vs +154.01%) and monthly win rate (58.73% vs 63.49%), with no compensating stability benefit. The XGBoost model's tree-based nature proves more robust to market noise across different regimes — notably handling the VNINDEX drawdowns with stronger consistency through the `dist_SMA_100` trend filter. The AlphaForge combiner is retained in the codebase for research purposes only.
+> **Why XGBoost wins:** Although the AlphaForge combiner incorporates GP alpha signals and an LSTM meta-combiner, its risk-adjusted return profile (Sharpe 0.38, Sortino 0.42) was consistently weaker than the XGBoost baseline (Sharpe 0.47, Sortino 0.67). The AlphaForge model also underperformed on total return (+135.72% vs +148.53%) and monthly win rate (48.28% vs 57.47%), while carrying a significantly deeper max drawdown (-42.86% vs -34.53%). The XGBoost model's tree-based nature proves more robust to market noise across different regimes — notably handling the VNINDEX drawdowns with stronger consistency through the `dist_SMA_100` trend filter. The AlphaForge combiner is retained in the codebase for research purposes only.
 
 ---
 
@@ -177,23 +170,17 @@ df = build_targets(df)
 df = target_generating_ranking(df)
 ```
 
-Or run `notebooks/02_Feature_Engineering.ipynb`.
+Or run `notebooks/02_Feature_EDA.ipynb`.
 
 ### 3. Select Features
 
-The production feature set is defined in `config.py`:
+Pass `candidate_features` from `config.py` to `walk_forward_cv`. With `icir_filter=True`, each fold automatically selects its own active subset — no manual feature selection needed.
 
 ```python
-from config import final_features
-# final_features = [
-#     'dist_52w_high', 'log_ret_skip1m', 'WQ_Alpha_024', 'log_ret_6m',
-#     'RSI_14', 'log_ret_3m', 'price_vol_divergence', 'dist_SMA_50',
-#     'dist_SMA_21', 'log_ret_1w', 'log_ret_1m', 'WQ_Alpha_028',
-#     'volume_surge_weekly', 'log_ret_1y', 'volatility_shock_monthly',
-#     'volume_surge_monthly', 'volatility_shock_weekly',
-#     'volatility_1w', 'volatility_1m', 'volatility_6m',
-# ]
+from config import candidate_features
 ```
+
+`final_features` is kept in `config.py` as a legacy static reference (the 20-feature set previously selected by hand in notebook 02), but it is no longer the operative list.
 
 To run your own feature group search (optional):
 
@@ -214,14 +201,14 @@ best_roi_row, best_sharpe_row, results_df = search_best_roi_and_sharpe(
 ```python
 from src.models import walk_forward_cv
 
-# Production: XGBoost only (recommended)
-results = walk_forward_cv(df, final_features, initial_train_months=24, test_months=6, gap_days=21)
+# Production: XGBoost with per-fold IC/IR filter + correlation pruning (recommended)
+results = walk_forward_cv(df, candidate_features, initial_train_months=24, test_months=6, gap_days=21, icir_filter=True, corr_prune=True)
 
 # Experimental: with GP alpha mining
-results = walk_forward_cv(df, final_features, initial_train_months=24, test_months=6, gap_days=21, use_gp=True)
+results = walk_forward_cv(df, candidate_features, initial_train_months=24, test_months=6, gap_days=21, icir_filter=True, corr_prune=True, use_gp=True)
 
 # Experimental: with AlphaForge dynamic factor combiner (unstable out-of-sample)
-results = walk_forward_cv(df, final_features, initial_train_months=24, test_months=6, gap_days=21, model='alphaforge')
+results = walk_forward_cv(df, candidate_features, initial_train_months=24, test_months=6, gap_days=21, model='alphaforge')
 ```
 
 Or run `notebooks/03_Model_Training.ipynb`.
@@ -231,9 +218,9 @@ Or run `notebooks/03_Model_Training.ipynb`.
 ```python
 from src.models import optimize_xgboost_ranker
 
-best_params = optimize_xgboost_ranker(df, final_features, n_trials=50)
-results = walk_forward_cv(df, final_features, model_params=best_params,
-                          initial_train_months=24, test_months=6, gap_days=21)
+best_params = optimize_xgboost_ranker(df, candidate_features, n_trials=50)
+results = walk_forward_cv(df, candidate_features, model_params=best_params,
+                          initial_train_months=24, test_months=6, gap_days=21, icir_filter=True)
 ```
 
 ### 6. Backtest & Evaluation
@@ -266,9 +253,11 @@ from src.inference import generate_paper_trade_signals
 buy, hold, sell, not_in_universe, rankings = generate_paper_trade_signals(
     df=df,
     current_portfolio=['VNM', 'FPT', 'HPG'],
-    features=final_features,
+    features=candidate_features,
     buy_n=30,
-    trend_filter_col='dist_SMA_100'
+    trend_filter_col='dist_SMA_100',
+    icir_filter=True,
+    corr_prune=True,
 )
 ```
 
@@ -299,12 +288,16 @@ Feature Engineering (src/features.py + src/alpha_mining.py)
   └── Exhaustive combination search to find best feature groups by ROI / Sharpe
       │
       ▼
-Production Features: 20 selected from config.final_features
-  [dist_52w_high, log_ret_skip1m, WQ_Alpha_024, log_ret_6m, RSI_14,
-   log_ret_3m, price_vol_divergence, dist_SMA_50, dist_SMA_21, log_ret_1w,
-   log_ret_1m, WQ_Alpha_028, volume_surge_weekly, log_ret_1y,
-   volatility_shock_monthly, volume_surge_monthly, volatility_shock_weekly,
-   volatility_1w, volatility_1m, volatility_6m]
+Candidate Features: full pool from config.candidate_features (~46 features)
+      │
+      ▼
+Per-fold IC/IR Filter (icir_filter=True inside walk_forward_cv)
+  └── Each fold selects its own active subset: |IC IR| > 0.02 on training window only
+      │
+      ▼
+Per-fold Correlation Pruning (corr_prune=True inside walk_forward_cv)
+  └── Within each FEATURE_GROUPS group, drops the lower-|IC IR| feature from any pair
+      with |Spearman corr| ≥ 0.75 — computed on training window only, zero look-ahead
       │
       ▼
 Target: Risk-Adjusted Quintile (next_1m_ret / volatility_3m → qcut into 5 bins per day)
@@ -360,7 +353,7 @@ Three workflows keep the system running automatically:
 | Workflow | Schedule | Purpose |
 |---|---|---|
 | `daily_update.yml` | Daily (market close) | Fetches new OHLCV data, updates the Parquet store |
-| `precompute_model.yml` | Weekly | Runs Kaggle kernel, retrains the model, and uploads precomputed artifacts to Hugging Face
+| `precompute_model.yml` | After daily data update (or manual) | Runs Kaggle kernel, recomputes walk-forward artifacts, and uploads predictions to Hugging Face |
 | `keep_alive.yml` | Periodic | Pings the Streamlit app to prevent cold-start shutdowns |
 
 ---
