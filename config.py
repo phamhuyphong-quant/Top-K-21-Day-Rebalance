@@ -71,10 +71,10 @@ candidate_features = [
 
     # --- Structural / context features (XGBoost only, NOT deep combiner) ---
     # monthly-compatible but not cross-sectional return signals
-    "turnover_12m",       # 252d/504d volume ratio — structural liquidity level
-    "limit_bias_60d",     # up-limit minus down-limit days (60d) — demand/supply pressure
-    "herding_dispersion", # cross-sectional return std — market regime indicator
-    "amihud_illiquidity", # log1p(|ret|/volume, 21d) — illiquidity premium proxy
+    #"turnover_12m",       # 252d/504d volume ratio — structural liquidity level
+    #"limit_bias_60d",     # up-limit minus down-limit days (60d) — demand/supply pressure
+    #"herding_dispersion", # cross-sectional return std — market regime indicator
+    #"amihud_illiquidity", # log1p(|ret|/volume, 21d) — illiquidity premium proxy
 ]
 BASE_MODEL_PARAMS= {
     'device':             'cuda',

@@ -285,7 +285,7 @@ wq = WorldQuantAlphas(df)  # df must have: Symbol, date, open, high, low, close,
 
 Computes all 14 alphas, replaces `inf`/`NaN` with `NaN`, and returns a DataFrame with columns `WQ_Alpha_001` through `WQ_Alpha_202`. This is called **automatically inside `build_features()`** — do not invoke it manually before calling `build_features()`.
 
-> **Note:** Of the 14 alphas, `WQ_Alpha_024` and `WQ_Alpha_028` appear in `config.final_features` (the production feature set). The full set of 14 is available in `config.candidate_features` for feature search experiments.
+> **Note:** Of the 14 alphas, `WQ_Alpha_024` and `WQ_Alpha_028` are among the features in `config.candidate_features` (the operative feature pool passed to `walk_forward_cv`). `config.final_features` is a static legacy reference and is no longer the operative list.
 
 ---
 
@@ -382,7 +382,7 @@ print(best_roi_row['combo_name'], best_roi_row['roi_%'])
 
 ---
 
-#### `walk_forward_cv(df, features, model_params=None, initial_train_months=12, test_months=6, gap_days=21, model='xgboost', use_gp=False, liquidity_filter=False) → DataFrame`
+#### `walk_forward_cv(df, features, model_params=None, initial_train_months=12, test_months=6, gap_days=21, model='xgboost', use_gp=False, icir_filter=False, icir_threshold=0.02, icir_target_col='next_1m_ret', corr_prune=False, corr_threshold=0.75, liquidity_filter=False) → DataFrame`
 
 The core training and evaluation function. Simulates live deployment by rolling through time:
 
@@ -401,9 +401,16 @@ At each fold, the model is fitted on the training slice and predictions are stor
 | `gap_days` | `21` | Trading-day gap between train end and test start |
 | `model` | `'xgboost'` | `'xgboost'` for XGBoost LambdaRank only; `'alphaforge'` for the AlphaForge dynamic factor combiner |
 | `use_gp` | `False` | Enable GP alpha mining (adds `gplearn`-evolved alpha columns before training) |
+| `icir_filter` | `False` | Enable per-fold IC/IR feature selection. At each fold, features are evaluated on the training window only and those with `\|IC IR\| <= icir_threshold` are dropped before the model sees any data. Eliminates look-ahead bias that would result from selecting features on the full dataset upfront (as in notebook 02). |
+| `icir_threshold` | `0.02` | Minimum `\|IC IR\|` for a feature to be used in a given fold. Features that fall below this bar in a fold may recover and be included in later folds as more history accumulates. |
+| `icir_target_col` | `'next_1m_ret'` | Forward-return column used as the IC target. Change to `'next_1w_ret'` for weekly-horizon experiments. |
+| `corr_prune` | `False` | Enable per-fold Spearman correlation pruning. After the IC/IR filter (or directly on the full candidate pool if `icir_filter=False`), pairs of features within the same `FEATURE_GROUPS` group whose `\|Spearman corr\| ≥ corr_threshold` are compared and the one with the lower `\|IC IR\|` is dropped. Computed on `fold.train_df` only — zero look-ahead bias. |
+| `corr_threshold` | `0.75` | Correlation threshold for `corr_prune`. Mirrors the value used in notebook 02. |
 | `liquidity_filter` | `False` | Filter out illiquid stocks before training |
 
 > **Note:** The function default of `initial_train_months=12` is a code fallback only. Always pass `initial_train_months=24` to reproduce the reported backtest results (63-month period, multiple folds).
+
+> **Note on `icir_filter` / `corr_prune`:** Feature selection in notebook 02 is performed on the full dataset and is intentionally exploratory. Use `icir_filter=True, corr_prune=True` in `walk_forward_cv` whenever you want a fully bias-free pipeline — each fold selects and deduplicates its own feature subset using only the data it is allowed to see.
 
 **Returns:** Concatenated OOS predictions DataFrame with a `pred_score` column. Pass directly to `simulate_portfolio()` or `compute_top_quantile_win_rate()`.
 
@@ -586,7 +593,6 @@ Used by the GitHub Actions precompute workflow. Runs the full walk-forward CV an
 **Returns:** `(predictions_path, equity_curve_path, final_model_path)` — paths to the three saved artifacts:
 - `pretrained_predictions.parquet` — Full OOS predictions DataFrame
 - `pretrained_equity_curve.parquet` — Equity curve from the backtest
-- `pretrained_model.json` — Final XGBoost model trained on all available data
 
 ---
 
@@ -598,7 +604,7 @@ Used by the GitHub Actions precompute workflow. Runs the full walk-forward CV an
 
 ---
 
-#### `generate_paper_trade_signals(df, current_portfolio, features, use_mega=False, model=None, buy_n=30, trend_filter_col='dist_SMA_100', trend_filter_threshold=1.0, target_col='target_quintile') → tuple`
+#### `generate_paper_trade_signals(df, current_portfolio, features, use_mega=False, model=None, buy_n=30, trend_filter_col='dist_SMA_100', trend_filter_threshold=1.0, target_col='target_quintile', icir_filter=False, icir_threshold=0.02, icir_target_col='next_1m_ret', corr_prune=False, corr_threshold=0.75) → tuple`
 
 The main inference function. If no pretrained `model` is passed, trains a fresh XGBoost ranker on all historical data up to (but not including) today's date, then scores today's VN universe.
 
@@ -623,6 +629,11 @@ The main inference function. If no pretrained `model` is passed, trains a fresh 
 | `trend_filter_threshold` | `1.0` | Stock must be above this value to qualify as a new buy |
 | `use_mega` | `False` | Not yet implemented — raises `NotImplementedError` if `True` |
 | `model` | `None` | Pass a pretrained `XGBRanker` to skip training (used by the dashboard) |
+| `icir_filter` | `False` | If `True`, runs IC/IR feature selection on the full training history before fitting the model. Features with `\|IC IR\| ≤ icir_threshold` are dropped. Same logic as the per-fold filter in `walk_forward_cv`, applied once to the full available history. |
+| `icir_threshold` | `0.02` | Minimum `\|IC IR\|` to keep a feature when `icir_filter=True`. |
+| `icir_target_col` | `'next_1m_ret'` | Forward-return column used as the IC target. |
+| `corr_prune` | `True` | If `True`, runs Spearman correlation pruning on the training history after the IC/IR filter (or on the full candidate pool if `icir_filter=False`). Within each `FEATURE_GROUPS` group, the weaker of any highly-correlated pair (`\|corr\| ≥ corr_threshold`) is dropped. Keeps the feature set consistent with what `walk_forward_cv(corr_prune=True)` used during training. |
+| `corr_threshold` | `0.75` | Correlation threshold for `corr_prune`. |
 
 **Returns:** `(buy_list, hold_list, sell_list, not_in_universe_list, ranked_today_df)`
 
@@ -734,7 +745,8 @@ Prints the currently active factors and their Ridge weights, sorted by absolute 
 **Purpose:** Centralised definition of the production feature set, full candidate feature pool, and base model hyperparameters.
 
 ```python
-# Production feature set — 20 features selected by IC/IR analysis + correlation pruning
+# Legacy static reference — 20 features previously selected by IC/IR analysis + correlation pruning.
+# No longer the operative list; walk_forward_cv with icir_filter=True selects features per fold at runtime.
 final_features = [
     'dist_52w_high', 'log_ret_skip1m', 'WQ_Alpha_024', 'log_ret_6m',
     'RSI_14', 'log_ret_3m', 'price_vol_divergence', 'dist_SMA_50',
@@ -763,7 +775,7 @@ BASE_MODEL_PARAMS = {
 }
 ```
 
-`candidate_features` contains the full set of ~46 engineered features available for feature group search experiments, including all 14 WQ alpha columns and structural/context features (`turnover_12m`, `limit_bias_60d`, `herding_dispersion`, `amihud_illiquidity`).
+`candidate_features` is the operative feature pool passed to `walk_forward_cv`. It contains the full set of ~46 engineered features available, including all 14 WQ alpha columns and structural/context features (`turnover_12m`, `limit_bias_60d`, `herding_dispersion`, `amihud_illiquidity`). When `icir_filter=True`, each fold selects its own active subset from this pool at runtime — no upfront manual selection needed.
 
 ---
 
@@ -788,16 +800,20 @@ get_tags()
                             ┌───────────┴──────────────────────┐
                             │                                  │
                    (optional)                                  │
-              search_best_roi_and_sharpe()             config.final_features
-              (feature_search.py)                      (20 features)
+              search_best_roi_and_sharpe()             config.candidate_features
+              (feature_search.py)                      (full feature pool)
               → 127 group combinations                         │
                             │                                  │
                             └──────────────┬───────────────────┘
                                            │
                               walk_forward_cv(df, features,
                                 initial_train_months=24,
-                                test_months=6, gap_days=21)
+                                test_months=6, gap_days=21,
+                                icir_filter=True,
+                                corr_prune=True)
                               (models.py)
+                              ├── Per-fold IC/IR filter → active feature subset
+                              ├── Per-fold correlation pruning → deduplicated subset
                               ├── model='xgboost': XGBoost LambdaRank only  ✅ Production
                               └── model='alphaforge': AlphaForge Ridge combiner  🔬 Experimental
                                            │
@@ -813,7 +829,6 @@ get_tags()
               pretrain_and_save_artifacts()
               → pretrained_predictions.parquet  ──► Hugging Face Dataset
               → pretrained_equity_curve.parquet ──► Hugging Face Dataset
-              → pretrained_model.json           ──► Hugging Face Dataset
                          │
                          ▼
                       app.py

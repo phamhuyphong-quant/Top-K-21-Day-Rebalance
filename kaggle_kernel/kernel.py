@@ -21,14 +21,14 @@ sys.path.insert(0, '/kaggle/working/repo')
 from src.features import build_features, target_generating_ranking,build_targets
 from src.evaluation import pretrain_and_save_artifacts
 import pandas as pd
-from config import final_features
+from config import candidate_features
 df_raw = pd.read_parquet('data/market_data.parquet')
 df_raw = df_raw[df_raw["close"] > 0].copy()
 df = build_features(df_raw)
 df = build_targets(df)
 df = target_generating_ranking(df)
 
-best_features = final_features
+best_features = candidate_features
 
 
 pretrain_and_save_artifacts(
@@ -45,7 +45,7 @@ from huggingface_hub import HfApi
 HF_TOKEN = os.environ.get('HF_TOKEN', '')
 api = HfApi(token=HF_TOKEN)
 
-for fname in ["pretrained_predictions.parquet", "pretrained_equity_curve.parquet", "pretrained_model.json"]:
+for fname in ["pretrained_predictions.parquet", "pretrained_equity_curve.parquet"]:
     api.upload_file(
         path_or_fileobj=f"/kaggle/working/repo/data/pretrained/{fname}",
         path_in_repo=fname,
@@ -64,7 +64,9 @@ _, _, _, _, ranked_today = generate_paper_trade_signals(
     model=None,                 # retrains on full history inside the function
     buy_n=30,
     trend_filter_col='dist_SMA_100',
-    target_col='target_quintile'
+    target_col='target_quintile',
+    icir_filter=True,
+    corr_prune = True,
 )
 
 ranked_today = ranked_today.assign(signal_date=str(df['date'].max().date()))
