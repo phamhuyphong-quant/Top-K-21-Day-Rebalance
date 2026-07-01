@@ -30,7 +30,7 @@
             KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
             KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
           run: |
-            pip install kaggle
+            pip install -U kaggle kagglesdk
             mkdir -p ~/.kaggle
             echo "{\"username\":\"${KAGGLE_USERNAME}\",\"key\":\"${KAGGLE_KEY}\"}" > ~/.kaggle/kaggle.json
             chmod 600 ~/.kaggle/kaggle.json
