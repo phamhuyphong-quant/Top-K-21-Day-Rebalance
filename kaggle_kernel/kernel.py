@@ -4,11 +4,11 @@ random.seed(42)
 np.random.seed(42)
 # ── 1. Clone main branch (source code) ───────────────────────────────────────
 GH_PAT = os.environ.get('GH_PAT') or os.environ.get('GITHUB_TOKEN', '')
-os.system(f"git clone --depth 1 --branch main https://{GH_PAT}@github.com/phamhuyphong-quant/Cross_Sectional_Rank_VN.git /kaggle/working/repo")
+os.system(f"git clone --depth 1 --branch main https://{GH_PAT}@github.com/phamhuyphong-quant/cross_sectional_rank_vn.git /kaggle/working/repo")
 sys.path.append('/kaggle/working/repo')
 
 # ── 2. Pull market_data.parquet from data-storage branch ─────────────────────
-os.system(f"git clone --depth 1 --branch data-storage https://{GH_PAT}@github.com/phamhuyphong-quant/Cross_Sectional_Rank_VN.git /kaggle/working/data-storage")
+os.system(f"git clone --depth 1 --branch data-storage https://{GH_PAT}@github.com/phamhuyphong-quant/cross_sectional_rank_vn.git /kaggle/working/data-storage")
 os.makedirs('/kaggle/working/repo/data', exist_ok=True)
 os.system("cp /kaggle/working/data-storage/market_data.parquet /kaggle/working/repo/data/market_data.parquet")
 

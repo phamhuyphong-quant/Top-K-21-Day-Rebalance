@@ -119,8 +119,8 @@ The dashboard lets you:
 
 ```bash
 # Clone the repository
-git clone https://github.com/phamhuyphong-quant/Cross_Sectional_Rank_VN.git
-cd Cross_Sectional_Rank_VN
+git clone https://github.com/phamhuyphong-quant/cross_sectional_rank_vn.git
+cd cross_sectional_rank_vn
 
 # Install dependencies
 pip install -r requirements.txt
