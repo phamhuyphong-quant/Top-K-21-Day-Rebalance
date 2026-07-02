@@ -32,7 +32,7 @@ Usage
         df,
         initial_capital=10_000,
         walk_forward_kwargs=dict(initial_train_months=24, test_months=6, gap_days=21),
-        backtest_kwargs=dict(buy_fraction=0.05, hold_fraction=0.15,
+        backtest_kwargs=dict(topk=10, hold_fraction=0.15,
                              trend_filter_col='dist_SMA_100'),
         min_groups=1,          # minimum number of groups in a combo
         verbose=True,
@@ -148,7 +148,7 @@ def _run_combo_search(
         wf_kwargs.update(walk_forward_kwargs)
 
     bt_kwargs = dict(
-        buy_fraction=0.05, hold_fraction=0.15,
+        topk=10, hold_fraction=0.15,
         trailing_stop=-0.10, take_profit=0.50,
         time_of_rebalance="M", trend_filter_col="dist_SMA_100",
         settlement_delay=3,
@@ -336,7 +336,7 @@ def search_best_roi_and_sharpe(
     wf_kwargs = dict(initial_train_months=24, test_months=6, gap_days=21)
     if walk_forward_kwargs: wf_kwargs.update(walk_forward_kwargs)
 
-    bt_kwargs = dict(buy_fraction=0.05, hold_fraction=0.15, trend_filter_col="dist_SMA_100")
+    bt_kwargs = dict(topk=10, hold_fraction=0.15, trend_filter_col="dist_SMA_100")
     if backtest_kwargs: bt_kwargs.update(backtest_kwargs)
 
     # 2. Generate all combinations
