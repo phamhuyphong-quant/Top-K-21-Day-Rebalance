@@ -191,7 +191,7 @@ best_roi_row, best_sharpe_row, results_df = search_best_roi_and_sharpe(
     df,
     initial_capital=10_000,
     walk_forward_kwargs=dict(initial_train_months=24, test_months=6, gap_days=21),
-    backtest_kwargs=dict(buy_fraction=0.05, hold_fraction=0.15,
+    backtest_kwargs=dict(topk=10, hold_fraction=0.15,
                          trend_filter_col='dist_SMA_100'),
 )
 ```
@@ -233,7 +233,7 @@ result = simulate_portfolio(
     model=None,           # use pred_score column from walk_forward_cv
     features=None,
     initial_capital=100_000,
-    buy_fraction=0.10,
+    topk=10,
     time_of_rebalance='M',
     trend_filter_col='dist_SMA_100',
     allocation='equal',

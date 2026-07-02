@@ -367,7 +367,7 @@ best_roi_row, best_sharpe_row, result_df = search_best_roi_and_sharpe(
     df,
     initial_capital=10_000,
     walk_forward_kwargs=dict(initial_train_months=24, test_months=6, gap_days=21),
-    backtest_kwargs=dict(buy_fraction=0.20, trend_filter_col='dist_SMA_100'),
+    backtest_kwargs=dict(topk=10, trend_filter_col='dist_SMA_100'),
 )
 print(best_roi_row['combo_name'], best_roi_row['roi_%'])
 ```
@@ -531,7 +531,7 @@ ev.plot_equity_curves(result_basic, result_alphaforge,
 
 ---
 
-#### `simulate_portfolio(df, model, features, initial_capital, buy_fraction, time_of_rebalance, trend_filter_col, settlement_delay, vnindex_df, liquidity_filter, vol_lookback, vol_percentile, vol_window, adtv_participation, allocation) → DataFrame`
+#### `simulate_portfolio(df, model, features, initial_capital, topk, time_of_rebalance, trend_filter_col, settlement_delay, vnindex_df, liquidity_filter, vol_lookback, vol_percentile, vol_window, adtv_participation, allocation) → DataFrame`
 
 Simulates a realistic portfolio with VN-market timing conventions.
 
@@ -546,7 +546,7 @@ This correctly models VN T+3 settlement — you cannot buy with money from the s
 |---|---|---|
 | `model` | — | Trained XGBRanker; pass `None` to use existing `pred_score` column |
 | `initial_capital` | `10_000_000` | Starting capital |
-| `buy_fraction` | `0.05` | Top X% of ranked stocks are buy targets |
+| `topk` | `10` | Number of top-ranked stocks to buy |
 | `time_of_rebalance` | `'M'` | Rebalance frequency key: `'M'` = every 21 trading days, `'W'` = every 5 trading days. Matches the `shift(-21)` / `shift(-5)` horizon used in `build_targets()` so the holding period the model was trained on equals the holding period in the backtest. |
 | `trend_filter_col` | `'dist_SMA_100'` | Stock must have this column > 1.0 to qualify as a new buy. Pass `None` to disable. |
 | `settlement_delay` | `3` | Trading days between sell and cash availability |

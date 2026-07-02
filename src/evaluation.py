@@ -326,7 +326,7 @@ def simulate_portfolio(
     model,
     features,
     initial_capital=10_000_000,
-    buy_fraction=0.05,
+    topk=10,
     time_of_rebalance='M',
     trend_filter_col='dist_SMA_100',
     settlement_delay=3,
@@ -368,7 +368,7 @@ def simulate_portfolio(
     model               : trained XGBRanker; pass None to use existing 'pred_score' column
     features            : feature columns for model.predict() (ignored when model=None)
     initial_capital     : starting cash (VND)
-    buy_fraction        : top X% of ranked stocks are buy targets (e.g. 0.10 = top 10%)
+    topk                : number of top-ranked stocks to buy (e.g. 10 = top 10)
     time_of_rebalance   : pandas period alias ('M' = monthly, 'W' = weekly)
     trend_filter_col    : column name for trend filter; stock must have value > 1.0 to buy.
                           Pass None to disable.
@@ -585,7 +585,7 @@ def simulate_portfolio(
 
         day_df = day_df.sort_values('pred_score', ascending=False)
 
-        n_buy             = max(1, int(len(day_df) * buy_fraction))
+        n_buy             = topk
         target_buy_stocks = day_df.head(n_buy)['Symbol'].tolist()
 
         # Update peak prices for any trailing-stop use downstream
@@ -724,7 +724,7 @@ def pretrain_and_save_artifacts(
         features=None,
         df=honest_test_df, 
         initial_capital=100000,
-        buy_fraction=0.2,
+        topk=10,
         settlement_delay=3,
         time_of_rebalance='M', 
         liquidity_filter=True,
