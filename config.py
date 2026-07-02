@@ -97,3 +97,53 @@ BASE_MODEL_PARAMS= {
     'lambdarank_pair_method':         'topk',
     'lambdarank_num_pair_per_sample':  60,
 }
+
+
+FEATURE_GROUPS: dict[str, list[str]] = {
+    "returns": [
+        "log_ret_1w",
+        "log_ret_1m",
+        "log_ret_3m",
+        "log_ret_6m",
+        "log_ret_1y",
+    ],
+    "volatility": [
+        "volatility_1w",
+        "volatility_1m",
+        "volatility_3m",
+        "volatility_6m",
+        "volatility_shock_monthly",
+        "volatility_shock_weekly",
+    ],
+    "moving_average": [
+        "dist_SMA_9", "dist_SMA_21", "dist_SMA_50","dist_SMA_100","dist_SMA_200",
+        "dist_EMA_9", "dist_EMA_21", "dist_EMA_50","dist_EMA_100","dist_EMA_200",
+    ],
+    "volume": [
+        "volume_surge_monthly",
+        "volume_surge_weekly",
+        "obv_trend",
+        "price_vol_divergence",
+    ],
+    "rsi": [
+        "RSI_14",
+    ],
+    "wq_features":["WQ_Alpha_012","WQ_Alpha_024","WQ_Alpha_028","WQ_Alpha_053","WQ_Alpha_060"],
+    
+    "price_structure": [
+    "dist_52w_high",
+    "log_ret_skip1m",]
+
+}
+
+ALL_GROUP_NAMES: list[str] = list(FEATURE_GROUPS.keys())
+
+
+# ---------------------------------------------------------------------------
+# Helper: flatten a list of group names → feature column list
+# ---------------------------------------------------------------------------
+def groups_to_features(group_names: list[str]) -> list[str]:
+    features: list[str] = []
+    for g in group_names:
+        features.extend(FEATURE_GROUPS[g])
+    return features
