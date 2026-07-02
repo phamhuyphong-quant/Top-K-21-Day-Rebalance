@@ -715,7 +715,7 @@ def walk_forward_cv(
         # _ic_ir_map is guaranteed to exist here whenever corr_prune=True
         # (set by whichever branch above was active).
         if corr_prune and len(fold_features) > 1:
-            from src.feature_search import FEATURE_GROUPS as _FG
+            from config import FEATURE_GROUPS as _FG
 
             pruned = prune_correlated_features(
                 df=fold.train_df,

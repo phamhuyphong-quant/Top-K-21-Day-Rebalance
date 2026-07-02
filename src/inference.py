@@ -66,7 +66,7 @@ def generate_paper_trade_signals(
         print(f"   🔍 IC/IR filter: {len(features)} features selected.")
 
     if corr_prune and len(features) > 1:
-        from src.feature_search import FEATURE_GROUPS
+        from config import FEATURE_GROUPS
         # Reuse the ic_ir_map already computed by the icir filter if available;
         # otherwise compute it now (corr_prune=True but icir_filter=False).
         if not _ic_ir_map:

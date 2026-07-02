@@ -9,14 +9,13 @@ This document describes each module in `src/`, what it does, and how to use it. 
 1. [data_collect.py](#data_collectpy)
 2. [features.py](#featurespy)
 3. [alpha_mining.py](#alpha_miningpy)
-4. [feature_search.py](#feature_searchpy)
-5. [models.py](#modelspy)
-6. [evaluation.py](#evaluationpy)
-7. [inference.py](#inferencepy)
-8. [deep_combiner.py](#deep_combinerpy)
-9. [app.py](#apppy)
-10. [config.py](#configpy)
-11. [Data Flow Summary](#data-flow-summary)
+4. [models.py](#modelspy)
+5. [evaluation.py](#evaluationpy)
+6. [inference.py](#inferencepy)
+7. [deep_combiner.py](#deep_combinerpy)
+8. [app.py](#apppy)
+9. [config.py](#configpy)
+10. [Data Flow Summary](#data-flow-summary)
 
 ---
 
@@ -298,79 +297,6 @@ Applies a trained `gplearn` GP model to generate new alpha expressions from base
 ### `rank_ic_fitness(y_true, y_pred) → float`
 
 Custom fitness function for GP optimisation. Returns the Spearman rank correlation (IC) between an alpha's predicted values and actual future returns. Higher IC = better alpha.
-
----
-
-## `feature_search.py`
-
-**Purpose:** Exhaustively searches all combinations of predefined feature groups to find which combination produces the highest ROI or Sharpe ratio in a walk-forward backtest.
-
-### Feature Groups
-
-Features are organised into seven named groups:
-
-| Group | Features |
-|---|---|
-| `returns` | `log_ret_1w`, `log_ret_1m`, `log_ret_3m`, `log_ret_6m`, `log_ret_1y` |
-| `volatility` | `volatility_1w/1m/3m/6m`, `volatility_shock_monthly/weekly` |
-| `moving_average` | `dist_SMA_9/21/50/100/200`, `dist_EMA_9/21/50/100/200` |
-| `volume` | `volume_surge_monthly/weekly`, `obv_trend`, `price_vol_divergence` |
-| `rsi` | `RSI_14` |
-| `wq_features` | `WQ_Alpha_001`, `WQ_Alpha_002`, `WQ_Alpha_006`, `WQ_Alpha_007`, `WQ_Alpha_013`, `WQ_Alpha_016`, `WQ_Alpha_024`, `WQ_Alpha_028`, `WQ_Alpha_040`, `WQ_Alpha_101`, `WQ_Alpha_103`, `WQ_Alpha_200`, `WQ_Alpha_201`, `WQ_Alpha_202` |
-| `price_structure` | `dist_52w_high`, `log_ret_skip1m` |
-
-With 7 groups, the search evaluates up to 127 non-empty combinations — feasible to run on Kaggle.
-
-### Functions
-
----
-
-#### `groups_to_features(group_names) → list[str]`
-
-Helper that flattens a list of group names into the corresponding flat list of feature column names.
-
----
-
-#### `find_best_feature_combo(df, *, initial_capital, walk_forward_kwargs, backtest_kwargs, model_params, min_groups, verbose) → (list[str], float, DataFrame)`
-
-Searches all feature group combinations and returns the one that maximises **final portfolio ROI (%)**.
-
-**Returns:** `(best_features, best_roi, results_df)`
-
----
-
-#### `find_best_feature_combo_sharpe(df, *, risk_free_rate, ...) → (list[str], float, DataFrame)`
-
-Same as above but optimises for **annualised Sharpe ratio** instead of raw ROI.
-
-**Returns:** `(best_features, best_sharpe, results_df)`
-
----
-
-#### `find_best_feature_combo_subset(df, candidate_groups, metric, **kwargs) → (list[str], float, DataFrame)`
-
-Restricts the search to a subset of groups. Pass `metric='roi'` or `metric='sharpe'`.
-
----
-
-#### `search_best_roi_and_sharpe(df, *, risk_free_rate, initial_capital, walk_forward_kwargs, backtest_kwargs, model_params, min_groups, verbose) → (dict, dict, DataFrame)`
-
-Runs the search once and identifies the best combination for both ROI and Sharpe simultaneously, avoiding two separate searches.
-
-**Returns:** `(best_roi_row, best_sharpe_row, results_df)`
-
-**Example:**
-```python
-from src.feature_search import search_best_roi_and_sharpe
-
-best_roi_row, best_sharpe_row, result_df = search_best_roi_and_sharpe(
-    df,
-    initial_capital=10_000,
-    walk_forward_kwargs=dict(initial_train_months=24, test_months=6, gap_days=21),
-    backtest_kwargs=dict(topk=10, trend_filter_col='dist_SMA_100'),
-)
-print(best_roi_row['combo_name'], best_roi_row['roi_%'])
-```
 
 ---
 
@@ -797,15 +723,13 @@ get_tags()
                                build_targets() → next_1m_ret, next_1w_ret
                                target_generating_ranking() → qid, target_quintile
                                         │
-                            ┌───────────┴──────────────────────┐
-                            │                                  │
-                   (optional)                                  │
-              search_best_roi_and_sharpe()             config.candidate_features
-              (feature_search.py)                      (full feature pool)
-              → 127 group combinations                         │
-                            │                                  │
-                            └──────────────┬───────────────────┘
-                                           │
+                                        |
+                                        |               
+                                        |
+                           config.candidate_features
+                                        │
+                                        |
+                                        |
                               walk_forward_cv(df, features,
                                 initial_train_months=24,
                                 test_months=6, gap_days=21,

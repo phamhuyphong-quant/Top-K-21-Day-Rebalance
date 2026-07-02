@@ -37,7 +37,6 @@ project/
 │   ├── data_collect.py       # VN universe construction & incremental data fetching
 │   ├── features.py           # Technical feature engineering (RSI, MA, volatility, etc.)
 │   ├── alpha_mining.py       # WorldQuant-style alpha factors & GP alpha search
-│   ├── feature_search.py     # Feature group combination search (optimise ROI / Sharpe)
 │   ├── models.py             # XGBoost ranker, walk-forward CV, Optuna tuning
 │   ├── evaluation.py         # Backtest engine, portfolio metrics, IC analysis
 │   ├── inference.py          # Live signal generation (Buy / Hold / Sell)
@@ -56,7 +55,6 @@ project/
 - **VN Universe Construction** — Automatically combines VN30 + VNMidCap from the VCI data source via `vnstock`.
 - **Incremental Data Updates** — Smart incremental fetching: only downloads new trading days, skipping up-to-date symbols.
 - **Rich Feature Set** — Multi-horizon log returns (1W/1M/3M/6M/1Y), volume surge ratios, annualised volatility, RSI-14, SMA/EMA distances (9/21/50/100/200), 52-week high distance, skip-1M return, OBV trend, price-volume divergence, and WorldQuant-style alpha factors (Alpha #001, #002, #006, #007, #013, #016, #024, #028, #040, #101, #103, #200, #201, #202). The full candidate pool is defined in `config.py` (`candidate_features`); per-fold IC/IR filtering selects the active subset at runtime inside `walk_forward_cv`.
-- **Feature Group Search** — `feature_search.py` exhaustively evaluates all combinations of feature groups to find the configuration that maximises ROI or Sharpe ratio (up to 127 combinations across 7 groups).
 - **XGBoost LambdaRank** — Optimises NDCG directly for ranking quality rather than regression error. Selected as the production model after comparative experiments.
 - **Walk-Forward Validation** — Simulates live deployment; avoids look-ahead bias with a strict 21-day gap between train and test periods (24-month training window, 6-month test window).
 - **IC Analysis** — Evaluates each feature's Information Coefficient (Spearman rank correlation) against future returns, both aggregate and time-series IC IR.
@@ -182,19 +180,6 @@ from config import candidate_features
 
 `final_features` is kept in `config.py` as a legacy static reference (the 20-feature set previously selected by hand in notebook 02), but it is no longer the operative list.
 
-To run your own feature group search (optional):
-
-```python
-from src.feature_search import search_best_roi_and_sharpe
-
-best_roi_row, best_sharpe_row, results_df = search_best_roi_and_sharpe(
-    df,
-    initial_capital=10_000,
-    walk_forward_kwargs=dict(initial_train_months=24, test_months=6, gap_days=21),
-    backtest_kwargs=dict(topk=10, hold_fraction=0.15,
-                         trend_filter_col='dist_SMA_100'),
-)
-```
 
 ### 4. Model Training
 
@@ -282,10 +267,6 @@ Feature Engineering (src/features.py + src/alpha_mining.py)
   ├── Price Structure: 52-week high distance, price-volume divergence
   └── Alpha Factors:   WorldQuant Alpha #001, #002, #006, #007, #013, #016,
                        #024, #028, #040, #101, #103, #200, #201, #202
-      │
-      ▼
-(Optional) Feature Group Search (src/feature_search.py)
-  └── Exhaustive combination search to find best feature groups by ROI / Sharpe
       │
       ▼
 Candidate Features: full pool from config.candidate_features (~46 features)
