@@ -128,7 +128,22 @@ FEATURE_GROUPS: dict[str, list[str]] = {
     "rsi": [
         "RSI_14",
     ],
-    "wq_features":["WQ_Alpha_012","WQ_Alpha_024","WQ_Alpha_028","WQ_Alpha_053","WQ_Alpha_060"],
+    "wq_features": [
+        "WQ_Alpha_001",
+        "WQ_Alpha_002",
+        "WQ_Alpha_006",
+        "WQ_Alpha_007",
+        "WQ_Alpha_013",
+        "WQ_Alpha_016",
+        "WQ_Alpha_024",
+        "WQ_Alpha_028",
+        "WQ_Alpha_040",
+        "WQ_Alpha_101",
+        "WQ_Alpha_103",
+        "WQ_Alpha_200",
+        "WQ_Alpha_201",
+        "WQ_Alpha_202"
+    ],
     
     "price_structure": [
     "dist_52w_high",
