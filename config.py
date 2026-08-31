@@ -82,20 +82,23 @@ BASE_MODEL_PARAMS= {
     'objective':          'rank:ndcg',
     'random_state':       42,
     # Tree structure
-    'n_estimators':       100,
-    'max_depth':          4,
+    'n_estimators':       150,
+    'max_depth':          3,
     'min_child_weight':   5,
     # Learning
-    'learning_rate':      0.05,
+    'learning_rate':      0.03,
     # Sampling
     'subsample':          0.7,
     'colsample_bytree':   0.6,
     # Regularization
-    'reg_lambda':         2.0,
-    'reg_alpha':          0.5,
+    'reg_lambda':         5.0,
+    'reg_alpha':          1,
     # Ranking
     'lambdarank_pair_method':         'topk',
-    'lambdarank_num_pair_per_sample':  60,
+    'lambdarank_num_pair_per_sample':  20,
+    'n_jobs':          -1,
+    'ndcg_exp_gain':False,
+
 }
 
 
@@ -153,6 +156,39 @@ FEATURE_GROUPS: dict[str, list[str]] = {
 
 ALL_GROUP_NAMES: list[str] = list(FEATURE_GROUPS.keys())
 
+
+usedSymbols = ['AAA', 'ACB', 'ACC', 'ACL', 'ADG', 'ADS', 'AGG', 'AGR', 'ANV',
+       'APG', 'APH', 'ASM', 'ASP', 'AST', 'BAF', 'BCE', 'BCM', 'BFC',
+       'BIC', 'BID', 'BKG', 'BMC', 'BMI', 'BMP', 'BSI', 'BSR', 'BTP',
+       'BVH', 'BWE', 'C32', 'CCC', 'CCL', 'CDC', 'CHP', 'CIG', 'CII',
+       'CKG', 'CLL', 'CMG', 'CMX', 'CNG', 'CRC', 'CRE', 'CSM', 'CSV',
+       'CTD', 'CTF', 'CTG', 'CTI', 'CTR', 'CTS', 'D2D', 'DAH', 'DBC',
+       'DBD', 'DC4', 'DCL', 'DCM', 'DGW', 'DHA', 'DHC', 'DHM', 'DIG',
+       'DLG', 'DMC', 'DPG', 'DPM', 'DPR', 'DRC', 'DSC', 'DSE', 'DTA',
+       'DVP', 'DXG', 'DXS', 'EIB', 'ELC', 'EVE', 'EVF', 'EVG', 'FCM',
+       'FCN', 'FIR', 'FIT', 'FMC', 'FPT', 'FRT', 'FTS', 'GAS', 'GDT',
+       'GEE', 'GEG', 'GEX', 'GIL', 'GMD', 'GSP', 'GVR', 'HAG', 'HAH',
+       'HAP', 'HAR', 'HAX', 'HCD', 'HCM', 'HDB', 'HDC', 'HDG', 'HHP',
+       'HHS', 'HHV', 'HID', 'HII', 'HMC', 'HPG', 'HPX', 'HQC', 'HSG',
+       'HSL', 'HT1', 'HTG', 'HTI', 'HTN', 'HUB', 'HVH', 'ICT', 'IDI',
+       'IJC', 'ILB', 'IMP', 'ITC', 'ITD', 'JVC', 'KBC', 'KDC', 'KDH',
+       'KHG', 'KHP', 'KMR', 'KOS', 'KSB', 'LBM', 'LCG', 'LGL', 'LHG',
+       'LIX', 'LPB', 'LSS', 'MBB', 'MCM', 'MHC', 'MIG', 'MSB', 'MSH',
+       'MSN', 'MWG', 'NAB', 'NAF', 'NBB', 'NCT', 'NHA', 'NHH', 'NKG',
+       'NLG', 'NNC', 'NO1', 'NSC', 'NT2', 'NTL', 'NVL', 'OCB', 'OGC',
+       'ORS', 'PAC', 'PAN', 'PC1', 'PDR', 'PET', 'PGC', 'PHC', 'PHR',
+       'PLP', 'PLX', 'PNJ', 'POW', 'PPC', 'PTB', 'PTC', 'PTL', 'PVD',
+       'PVP', 'PVT', 'QCG', 'RAL', 'REE', 'RYG', 'SAB', 'SAM', 'SAV',
+       'SBG', 'SBT', 'SCR', 'SCS', 'SGN', 'SGR', 'SGT', 'SHA', 'SHB',
+       'SHI', 'SIP', 'SJD', 'SJS', 'SKG', 'SMB', 'SSB', 'SSI', 'ST8',
+       'STB', 'STK', 'SVD', 'SVT', 'SZC', 'SZL', 'TCB', 'TCH', 'TCI',
+       'TCL', 'TCM', 'TCO', 'TDC', 'TDG', 'TDH', 'TDP', 'TEG', 'THG',
+       'TIP', 'TLD', 'TLG', 'TLH', 'TMT', 'TNH', 'TNI', 'TNT', 'TPB',
+       'TRC', 'TSC', 'TTA', 'TTF', 'TV2', 'TVB', 'TVS', 'UIC', 'VCB',
+       'VCG', 'VCI', 'VDS', 'VFG', 'VGC', 'VHC', 'VHM', 'VIB', 'VIC',
+       'VIP', 'VIX', 'VJC', 'VND', 'VNL', 'VNM', 'VOS', 'VPB', 'VPG',
+       'VPH', 'VPI', 'VPL', 'VRC', 'VRE', 'VSC', 'VTO', 'VTP', 'YBM',
+       'YEG',]
 
 # ---------------------------------------------------------------------------
 # Helper: flatten a list of group names → feature column list
