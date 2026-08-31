@@ -90,13 +90,13 @@ class WorldQuantAlphas:
             self.ldf[col] = self.df.groupby("Symbol")[col].shift(1)
 
     def get_alpha_006(self):
-        # Alpha#6: -corr(open, volume, 10)
-        # ldf already has open_{T-1} and volume_{T-1}, so the 10-day rolling
-        # correlation at row T uses days T-1 … T-10 — no leakage.
+        # Alpha#6: -corr(open, volume, 21)
+        # ldf already has open_{T-1} and volume_{T-1}, so the 21-day rolling
+        # correlation at row T uses days T-1 … T-21 — no leakage.
         g = self.ldf.groupby("Symbol")
         return (
             -1
-            * g.apply(lambda x: x["open"].rolling(10).corr(x["volume"]), include_groups=False)
+            * g.apply(lambda x: x["open"].rolling(21).corr(x["volume"]), include_groups=False)
             .reset_index(level=0, drop=True)
             .reindex(self.df.index)
             .fillna(0)
@@ -116,13 +116,13 @@ class WorldQuantAlphas:
         )
 
     def get_alpha_028(self):
-        # Alpha#28: corr(adv20, low, 5) + (high + low) / 2 - close
+        # Alpha#28: corr(adv20, low, 21) + (high + low) / 2 - close
         # adv20 = 20-day avg volume; all from ldf so past-only.
         ldf = self.ldf.copy()
         ldf["adv20"] = ts_mean(ldf, "volume", 20)
         corr = (
             ldf.groupby("Symbol")
-            .apply(lambda x: x["adv20"].rolling(5).corr(x["low"]), include_groups=False)
+            .apply(lambda x: x["adv20"].rolling(21).corr(x["low"]), include_groups=False)
             .reset_index(level=0, drop=True)
             .reindex(self.df.index)
             .fillna(0)
@@ -130,7 +130,7 @@ class WorldQuantAlphas:
         return corr + ((ldf["high"] + ldf["low"]) / 2) - ldf["close"]
 
 
-    def get_alpha_001(self):
+    def get_alpha_105(self):
         # 12-1 month momentum: cumulative return over past 12 months, skipping the
         # most recent month. Skipping last month avoids short-term reversal contamination.
         # Most robust single factor in cross-sectional equity literature.
@@ -138,7 +138,7 @@ class WorldQuantAlphas:
         ret_1m  = ts_delta(self.ldf, "close", 21)
         return ret_12m - ret_1m
 
-    def get_alpha_101(self):
+    def get_alpha_104(self):
         # BAB proxy (Betting Against Beta):
         # Stocks with low rolling beta to the equal-weighted market tend to outperform
         # in risk-adjusted terms (Frazzini & Pedersen 2014). Works in VN because
@@ -169,7 +169,7 @@ class WorldQuantAlphas:
         # BAB signal: negative beta → bet against high-beta stocks
         return -1 * beta
 
-    def get_alpha_103(self):
+    def get_alpha_102(self):
         # Price Acceleration (monthly):
         # Second derivative of price at the monthly horizon.
         # ret_21d_{T} - ret_21d_{T-21}: positive = monthly momentum is accelerating.
@@ -184,7 +184,7 @@ class WorldQuantAlphas:
         # Ranks are cross-sectional (per-date), computed only over liquid stocks.
         ldf = self.ldf.copy()
         delta_logvol = ldf.groupby("Symbol")["volume"].transform(
-            lambda x: np.log(x + 1).diff(2)
+            lambda x: np.log(x + 1).diff(7)
         )
         intraday = (ldf["close"] - ldf["open"]) / (ldf["open"] + 0.001)
         rank_dvol = cs_rank(delta_logvol, ldf["date"], ldf["_is_liquid"])
@@ -194,7 +194,7 @@ class WorldQuantAlphas:
         return (
             -1
             * ldf.groupby("Symbol")
-            .apply(lambda x: x["_rdv"].rolling(6).corr(x["_ri"]), include_groups=False)
+            .apply(lambda x: x["_rdv"].rolling(21).corr(x["_ri"]), include_groups=False)
             .reset_index(level=0, drop=True)
             .reindex(self.df.index)
             .fillna(0)
@@ -268,14 +268,14 @@ class WorldQuantAlphas:
             .fillna(0)
         )
         return -1 * rank_std * corr_hv
-    def get_alpha_200(self):
+    def get_alpha_103(self):
         # Earnings-free value proxy: book-to-market via price distance from 52-week high.
         # Stocks far below their 52w high are relatively "cheap" — captures value + distress premium.
         # Works well in VN where P/B data is often stale; price-based value is cleaner.
         high_252 = self.ldf.groupby("Symbol")["close"].transform(
             lambda x: x.rolling(252, min_periods=60).max()
         )
-        return -1 * (self.ldf["close"] / (high_252 + 0.001) - 1)  # negative = far from high = cheap
+        return (self.ldf["close"] / (high_252 + 0.001) - 1)  # negative = far from high = cheap
 
     def get_alpha_201(self):
         # Volume trend confirmation: 1-month price momentum × 1-month volume momentum.
@@ -325,7 +325,7 @@ class WorldQuantAlphas:
         """
         print("Generating WorldQuant Alphas...")
         # --- Original alphas ---
-        self.df["WQ_Alpha_001"] = self.get_alpha_001()
+        
         self.df["WQ_Alpha_002"] = self.get_alpha_002()
         self.df["WQ_Alpha_006"] = self.get_alpha_006()
         self.df["WQ_Alpha_007"] = self.get_alpha_007()
@@ -337,11 +337,13 @@ class WorldQuantAlphas:
         self.df["WQ_Alpha_028"] = self.get_alpha_028()
 
         self.df["WQ_Alpha_040"] = self.get_alpha_040()
-        self.df["WQ_Alpha_101"] = self.get_alpha_101()    # BAB: negative beta proxy
-        self.df["WQ_Alpha_103"] = self.get_alpha_103()    # monthly price acceleration
-        self.df["WQ_Alpha_200"] = self.get_alpha_200()
-        self.df["WQ_Alpha_201"] = self.get_alpha_201()
-        self.df["WQ_Alpha_202"] = self.get_alpha_202()
+        
+        self.df["WQ_Alpha_104"] = self.get_alpha_104()    # BAB: negative beta proxy
+        self.df["WQ_Alpha_102"] = self.get_alpha_102()    # monthly price acceleration
+        self.df["WQ_Alpha_103"] = self.get_alpha_103()    # 12-1m momentum
+        self.df["WQ_Alpha_105"] = self.get_alpha_105()
+        #self.df["WQ_Alpha_201"] = self.get_alpha_201()
+        #self.df["WQ_Alpha_202"] = self.get_alpha_202()
 
         # NOTE: WQ_Turnover_12m, WQ_Limit_Bias, WQ_Herding_Disp, and Amihud
         # illiquidity are structural/context features — not return signals.

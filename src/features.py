@@ -444,7 +444,7 @@ def build_features(df, min_stocks_per_date: int = 50, adtv_limit = None, generat
     df = volume(df)
     df = rsi(df)
     df = volume_quality(df)
-    df = price_structure(df)
+    #df = price_structure(df)
 
     # Context / structural features for XGBoost — not return signals, not in deep combiner
     df = turnover_ratio(df)
