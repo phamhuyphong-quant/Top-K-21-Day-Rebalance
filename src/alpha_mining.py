@@ -44,9 +44,41 @@ def ts_argmax(df, col, d):
     return data.groupby(df['Symbol']).transform(
         lambda x: x.rolling(window=d, min_periods=1).apply(np.argmax) + 1
     )
+
+# --- CROSS-SECTIONAL HELPERS (mask-aware, không xoá dòng) ---
+def cs_mask(series, mask):
+    """Đưa các dòng không đủ điều kiện (kém thanh khoản) về NaN để chúng bị
+    loại khỏi thống kê cross-sectional, nhưng KHÔNG xoá dòng khỏi frame -->
+    các phép rolling per-symbol phía sau vẫn thấy chuỗi thời gian liên tục."""
+    if mask is None:
+        return series
+    return series.where(mask)
+
+def cs_rank(series, date, mask=None):
+    """Percentile rank cross-sectional theo ngày, chỉ tính trên các dòng
+    đủ điều kiện (mask=True)."""
+    return cs_mask(series, mask).groupby(date).rank(pct=True)
+
+def cs_mean(series, date, mask=None):
+    """Trung bình cross-sectional theo ngày, chỉ tính trên các dòng đủ điều
+    kiện, rồi broadcast giá trị đó về mọi dòng (kể cả dòng không đủ điều kiện)."""
+    return cs_mask(series, mask).groupby(date).transform("mean")
+
+
 class WorldQuantAlphas:
-    def __init__(self, df):
-        self.df = df.copy().sort_values(by=["Symbol", "date"])
+    def __init__(self, df, liquidity_mask=None):
+        """
+        liquidity_mask: pd.Series boolean cùng index với `df`, đánh dấu dòng nào
+        đủ thanh khoản (vd. adtv >= adtv_limit). Nếu None, mọi dòng được coi là
+        đủ điều kiện (không lọc cross-sectional). Mask KHÔNG làm xoá dòng nào —
+        nó chỉ loại các dòng kém thanh khoản khỏi các phép rank()/mean() theo
+        ngày, để các phép rolling theo Symbol vẫn chạy trên chuỗi liên tục.
+        """
+        self.df = df.copy()
+        self.df["_is_liquid"] = (
+            liquidity_mask.reindex(self.df.index) if liquidity_mask is not None else True
+        )
+        self.df = self.df.sort_values(by=["Symbol", "date"])
 
         # Build a lagged view of all OHLCV columns so that every alpha method
         # at row i (date T) only ever sees data from T-1 and earlier.
@@ -112,12 +144,14 @@ class WorldQuantAlphas:
         # in risk-adjusted terms (Frazzini & Pedersen 2014). Works in VN because
         # retail-driven momentum inflates high-beta stocks.
         # Beta = cov(stock_ret, mkt_ret) / var(mkt_ret) over 60 days, using ldf returns.
+        #
+        # mkt_ret is a cross-sectional (per-date) mean, computed only over liquid
+        # stocks via cs_mean(). The rolling(60) beta itself still runs per-Symbol
+        # on the FULL, continuous ldf — liquidity filtering never removes rows,
+        # so this rolling window is never distorted by gaps.
         ldf = self.ldf.copy()
         ldf["daily_ret"] = ldf.groupby("Symbol")["close"].pct_change()
-
-        # Equal-weighted market return per date (cross-sectional mean)
-        mkt_ret = ldf.groupby("date")["daily_ret"].transform("mean")
-        ldf["mkt_ret"] = mkt_ret
+        ldf["mkt_ret"] = cs_mean(ldf["daily_ret"], ldf["date"], ldf["_is_liquid"])
 
         def rolling_beta(x):
             ret   = x["daily_ret"]
@@ -146,15 +180,15 @@ class WorldQuantAlphas:
         return ret_now - ret_prev
     def get_alpha_002(self):
         # -corr(rank(delta(log(volume), 2)), rank((close-open)/open), 6)
-        # Volume momentum vs intraday return rank correlation
+        # Volume momentum vs intraday return rank correlation.
+        # Ranks are cross-sectional (per-date), computed only over liquid stocks.
         ldf = self.ldf.copy()
         delta_logvol = ldf.groupby("Symbol")["volume"].transform(
             lambda x: np.log(x + 1).diff(2)
         )
         intraday = (ldf["close"] - ldf["open"]) / (ldf["open"] + 0.001)
-        # Cross-sectional ranks per date
-        rank_dvol = delta_logvol.groupby(ldf["date"]).rank(pct=True)
-        rank_intra = intraday.groupby(ldf["date"]).rank(pct=True)
+        rank_dvol = cs_rank(delta_logvol, ldf["date"], ldf["_is_liquid"])
+        rank_intra = cs_rank(intraday, ldf["date"], ldf["_is_liquid"])
         ldf["_rdv"] = rank_dvol
         ldf["_ri"] = rank_intra
         return (
@@ -180,10 +214,11 @@ class WorldQuantAlphas:
 
     def get_alpha_013(self):
         # -rank(covariance(rank(close), rank(volume), 5))
-        # Close-volume co-movement: stocks where price and volume co-move get shorted
+        # Close-volume co-movement: stocks where price and volume co-move get shorted.
+        # Both rank layers are cross-sectional (per-date), over liquid stocks only.
         ldf = self.ldf.copy()
-        rank_c = ldf.groupby("date")["close"].rank(pct=True)
-        rank_v = ldf.groupby("date")["volume"].rank(pct=True)
+        rank_c = cs_rank(ldf["close"], ldf["date"], ldf["_is_liquid"])
+        rank_v = cs_rank(ldf["volume"], ldf["date"], ldf["_is_liquid"])
         ldf["_rc"] = rank_c
         ldf["_rv"] = rank_v
         cov5 = (
@@ -193,15 +228,15 @@ class WorldQuantAlphas:
             .reindex(self.df.index)
             .fillna(0)
         )
-        return -1 * cov5.groupby(ldf["date"]).rank(pct=True)
+        return -1 * cs_rank(cov5, ldf["date"], ldf["_is_liquid"])
 
 
     def get_alpha_016(self):
         # -rank(covariance(rank(high), rank(volume), 5))
         # Same idea as 013 but using high instead of close — captures breakout/blowoff tops
         ldf = self.ldf.copy()
-        rank_h = ldf.groupby("date")["high"].rank(pct=True)
-        rank_v = ldf.groupby("date")["volume"].rank(pct=True)
+        rank_h = cs_rank(ldf["high"], ldf["date"], ldf["_is_liquid"])
+        rank_v = cs_rank(ldf["volume"], ldf["date"], ldf["_is_liquid"])
         ldf["_rh"] = rank_h
         ldf["_rv"] = rank_v
         cov5 = (
@@ -211,7 +246,7 @@ class WorldQuantAlphas:
             .reindex(self.df.index)
             .fillna(0)
         )
-        return -1 * cov5.groupby(ldf["date"]).rank(pct=True)
+        return -1 * cs_rank(cov5, ldf["date"], ldf["_is_liquid"])
 
     
     def get_alpha_040(self):
@@ -223,7 +258,7 @@ class WorldQuantAlphas:
         std_high = ldf.groupby("Symbol")["high"].transform(
             lambda x: x.rolling(21, min_periods=5).std()
         )
-        rank_std = std_high.groupby(ldf["date"]).rank(pct=True)
+        rank_std = cs_rank(std_high, ldf["date"], ldf["_is_liquid"])
         corr_hv = (
             ldf.groupby("Symbol")
             .apply(lambda x: x["high"].rolling(21).corr(x["volume"]),
@@ -260,10 +295,14 @@ class WorldQuantAlphas:
         # Remove the equal-weighted market return from each stock's 12-1m momentum,
         # keeping only the stock-specific component. Less crowded than raw momentum
         # and more robust through factor rotation periods.
+        #
+        # mkt_ret is a cross-sectional (per-date) mean over liquid stocks only
+        # (cs_mean). The rolling(252)/(21) sums still run per-Symbol on the full,
+        # continuous ldf — unaffected by liquidity filtering.
         ldf = self.ldf.copy()
         ldf["ret"] = ldf.groupby("Symbol")["close"].pct_change()
-        mkt_ret    = ldf.groupby("date")["ret"].transform("mean")
-        ldf["excess_ret"] = ldf["ret"] - mkt_ret
+        ldf["mkt_ret"] = cs_mean(ldf["ret"], ldf["date"], ldf["_is_liquid"])
+        ldf["excess_ret"] = ldf["ret"] - ldf["mkt_ret"]
 
         # Cumulative excess return over 12m skipping last 1m
         cum_12m = ldf.groupby("Symbol")["excess_ret"].transform(
@@ -278,6 +317,11 @@ class WorldQuantAlphas:
 
         Each column at row i (date T) is computed exclusively from OHLCV data on
         or before date T-1, matching the look-ahead-free contract of build_features().
+
+        Cross-sectional pieces (ranks/means computed per date) only aggregate over
+        rows flagged liquid in `liquidity_mask` (see cs_rank/cs_mean), while every
+        rolling/lag computation per Symbol still runs on the full, continuous
+        row history — liquidity filtering never removes rows before this point.
         """
         print("Generating WorldQuant Alphas...")
         # --- Original alphas ---

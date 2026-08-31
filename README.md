@@ -1,6 +1,6 @@
 # 📈 VN Cross-Sectional Ranking System
 
-> A machine learning pipeline that ranks Vietnamese stocks in the VN universe by predicted forward returns, and generates actionable paper-trading signals through an interactive Streamlit dashboard.
+> A machine learning pipeline that ranks Vietnamese stocks by predicted forward returns and publishes daily paper-trading signals, gated by a market-regime entry filter (**P1**).
 
 [![Live App](https://img.shields.io/badge/🚀%20Live%20App-Streamlit-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white)](https://cross-sectional-ranking-vn.streamlit.app/)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
@@ -12,15 +12,20 @@
 
 ## 🧠 Project Overview
 
-The Vietnamese stock market (VN universe) presents unique challenges: a relatively small investable universe of ~300 liquid stocks, a fixed 21-trading-day rebalancing cadence (matching the target return horizon) aligned with local liquidity patterns, and limited availability of fundamental data from Western providers. These constraints make **cross-sectional ranking** a more tractable approach than absolute price prediction.
+The Vietnamese stock market presents unique challenges: a relatively small investable universe of liquid stocks, a fixed ~21-trading-day rebalancing cadence matching the target return horizon, and limited fundamental data availability. These constraints make **cross-sectional ranking** — "which stocks are likely to outperform the others next month?" — more tractable than absolute price prediction.
 
-Instead of forecasting where a stock's price will go, this system answers a simpler question: *which stocks are likely to outperform the others next month?* The model ranks all stocks in the VN universe daily by expected relative performance, and flags the top-ranked as Buy signals.
+The production model, referred to as **P1** in the accompanying research, combines two pieces:
 
-The core production model is an **XGBoost LambdaRank** (`rank:ndcg`), trained using walk-forward cross-validation to simulate real-world out-of-sample performance. An **AlphaForge-style factor combiner** (Ridge regression with dynamic IC-based factor gating) was also explored but found to be unstable out-of-sample — see [Model Architecture](#-model-architecture) for the full comparison.
+1. **XGBoost LambdaRank** (`rank:ndcg`), trained via walk-forward cross-validation, ranking all stocks in the universe by predicted relative performance.
+2. **A combined market-regime entry filter.** P1 only takes positions when the market isn't in a specific low-dispersion, negative-trend regime; otherwise it holds cash for that period. The filter fires when **both** are true on the latest date:
+   - **P2 (dispersion):** `regime_bucket_monthly == "Q1"` — market return dispersion (MAD, 252-session rolling) is in the bottom 25% bucket.
+   - **P3 (trend):** `market1m_ema21 - market3m_ema63 < 0` — the EMA21 of market 1-month returns is below the EMA63 of market 3-month returns.
+
+An AlphaForge-style Ridge factor combiner and an LSTM regressor were also explored as alternative model heads (see `src/models.py` / `src/deep_combiner.py`) but are not used in production — kept in the codebase for research purposes.
 
 ### Why `rank:ndcg` over regression?
 
-A regression model trained on raw returns tries to predict exact magnitudes — a hard problem polluted by market noise. A ranking model only needs to get the *order* right: "Stock A will beat Stock B." This is a much weaker and more learnable signal, which is why LambdaRank (which directly optimises NDCG, a ranking quality metric) outperforms `reg:squarederror` in this setting.
+A regression model trained on raw returns tries to predict exact magnitudes — a hard problem polluted by market noise. A ranking model only needs to get the *order* right: "Stock A will beat Stock B." This is a weaker, more learnable signal, which is why LambdaRank (directly optimising NDCG) outperforms `reg:squarederror` here.
 
 ---
 
@@ -29,22 +34,27 @@ A regression model trained on raw returns tries to predict exact magnitudes — 
 ```
 project/
 ├── notebooks/
-│   ├── 01_Data_Collection.ipynb
-│   ├── 02_Feature_EDA.ipynb                  # Feature EDA — IC/IR analysis, correlation heatmap
-│   ├── 03_Model_Training.ipynb               # Walk-forward CV, Optuna tuning
-│   └── 04_Backtesting_and_Evaluation.ipynb   # Backtest engine, metrics, model comparison
+│   └── NTH RESEARCH/
+│       ├── Graphs and Extraneous Information.ipynb   # Data QA, slippage estimate, walk-forward diagram
+│       ├── Q1 and Q2.ipynb                            # P1/P2/P3 filter definitions & comparison
+│       └── Saving DataFrame.ipynb                     # Generates df_predict_ndcg (walk-forward OOS predictions)
 ├── src/
-│   ├── data_collect.py       # VN universe construction & incremental data fetching
-│   ├── features.py           # Technical feature engineering (RSI, MA, volatility, etc.)
-│   ├── alpha_mining.py       # WorldQuant-style alpha factors & GP alpha search
-│   ├── models.py             # XGBoost ranker, walk-forward CV, Optuna tuning
-│   ├── evaluation.py         # Backtest engine, portfolio metrics, IC analysis
-│   ├── inference.py          # Live signal generation (Buy / Hold / Sell)
-│   ├── deep_combiner.py      # AlphaForge-style dynamic alpha weighting (experimental)
-│   └── app.py                # Streamlit dashboard
-├── kaggle_kernel/            # Kaggle kernel scripts for GPU-accelerated training
-├── .github/workflows/        # GitHub Actions: daily updates, precompute, keep-alive
-├── config.py                 # candidate_features (operative pool) and final_features (legacy static reference) definitions
+│   ├── data_collect.py    # VN universe construction & incremental OHLCV fetching
+│   ├── features.py        # Feature engineering, target/label construction, market regime pipeline
+│   ├── alpha_mining.py    # WorldQuant-style alpha factors & GP alpha search
+│   ├── models.py          # Walk-forward CV, model specs (XGBoost/Linear/LSTM/AlphaForge), feature selection
+│   ├── simulation.py      # Object-oriented backtest engine (DataEngine, Portfolio, OrderManager, filters)
+│   ├── evaluation.py      # Plotting & performance-report utilities (IC, Sharpe, equity curves, etc.)
+│   ├── inference.py       # Live daily signal generation (Buy/Hold/Sell + ranked scores)
+│   ├── deep_combiner.py   # AlphaForge-style dynamic alpha weighting (experimental)
+│   └── app.py             # Minimal Streamlit page showing today's P1 signal
+├── kaggle_kernel/
+│   └── kernel.py          # Runs daily on Kaggle: builds features, applies P1, uploads today's signal
+├── .github/workflows/
+│   ├── daily_update.yml       # Fetches new OHLCV data, commits to data-storage branch
+│   ├── precompute_model.yml   # Pushes kernel.py to Kaggle after data update, waits for completion
+│   └── keep_alive.yml         # Pings the Streamlit app to prevent cold-start sleep
+├── config.py               # candidate_features, FEATURE_GROUPS, BASE_MODEL_PARAMS, usedSymbols
 └── requirements.txt
 ```
 
@@ -52,52 +62,19 @@ project/
 
 ## ✨ Key Features
 
-- **VN Universe Construction** — Automatically combines VN30 + VNMidCap from the VCI data source via `vnstock`.
-- **Incremental Data Updates** — Smart incremental fetching: only downloads new trading days, skipping up-to-date symbols.
-- **Rich Feature Set** — Multi-horizon log returns (1W/1M/3M/6M/1Y), volume surge ratios, annualised volatility, RSI-14, SMA/EMA distances (9/21/50/100/200), 52-week high distance, skip-1M return, OBV trend, price-volume divergence, and WorldQuant-style alpha factors (Alpha #001, #002, #006, #007, #013, #016, #024, #028, #040, #101, #103, #200, #201, #202). The full candidate pool is defined in `config.py` (`candidate_features`); per-fold IC/IR filtering selects the active subset at runtime inside `walk_forward_cv`.
-- **XGBoost LambdaRank** — Optimises NDCG directly for ranking quality rather than regression error. Selected as the production model after comparative experiments.
-- **Walk-Forward Validation** — Simulates live deployment; avoids look-ahead bias with a strict 21-day gap between train and test periods (24-month training window, 6-month test window).
-- **IC Analysis** — Evaluates each feature's Information Coefficient (Spearman rank correlation) against future returns, both aggregate and time-series IC IR.
-- **Correlation Pruning** — Within each feature group, removes the weaker of any highly-correlated pair (|Spearman corr| ≥ 0.75, keeping the higher |IC IR| feature). Mirrors notebook 02's exploratory step but runs per-fold inside `walk_forward_cv` and `generate_paper_trade_signals` on training data only, so there is zero look-ahead bias.
-- **Realistic Backtest Engine** — Simulates VN-market T+3 settlement, fixed 21-trading-day rebalancing (aligned to the `shift(-21)` target horizon), trailing stops, take-profit rules, and transaction costs.
-- **Live Signal Engine** — Produces daily Buy / Hold / Sell / NOT_IN_UNIVERSE signals with a configurable top-N band and trend filter.
-- **Streamlit Dashboard** — Interactive UI for backtesting, signal viewing, feature importance, IC charts, and Gemini-powered AI commentary.
-- **Experimental: AlphaForge Factor Combiner** — Implements AlphaForge Algorithm 2: dynamic Ridge regression with rolling RankIC/ICIR factor gating. Enable with `model='alphaforge'` in `walk_forward_cv`. Found to underperform the XGBoost baseline out-of-sample. Retained in the codebase for research purposes only.
-- **Experimental: GP Alpha Mining** — Uses genetic programming (`gplearn`) to evolve new alpha expressions from base features. Enable with `use_gp=True`.
-
----
-
-## 📊 Backtest Results
-
-All results are **out-of-sample** from walk-forward cross-validation (24-month initial training window, 6-month test windows, 21-day gap). No look-ahead bias — each fold trains strictly on past data. Backtest period: **January 2019 → May 2026**.
-
-### Production Model: XGBoost LambdaRank (Baseline)
-
-| Metric | Value |
-|---|---|
-| Total Return | **+148.53%** |
-| CAGR | **+13.38%** |
-| Sharpe Ratio | **0.47** |
-| Sortino Ratio | **0.67** |
-| Calmar Ratio | **0.39** |
-| Max Drawdown | **-34.53%** |
-| Monthly Win Rate | **57.47%** |
-| Profit Factor | **1.76** |
-
-### Experimental Model: AlphaForge Factor Combiner
-
-| Metric | Value |
-|---|---|
-| Total Return | +135.72% |
-| CAGR | +12.55% |
-| Sharpe Ratio | 0.38 |
-| Sortino Ratio | 0.42 |
-| Calmar Ratio | 0.29 |
-| Max Drawdown | -42.86% |
-| Monthly Win Rate | 48.28% |
-| Profit Factor | 1.49 |
-
-> **Why XGBoost wins:** Although the AlphaForge combiner incorporates GP alpha signals and an LSTM meta-combiner, its risk-adjusted return profile (Sharpe 0.38, Sortino 0.42) was consistently weaker than the XGBoost baseline (Sharpe 0.47, Sortino 0.67). The AlphaForge model also underperformed on total return (+135.72% vs +148.53%) and monthly win rate (48.28% vs 57.47%), while carrying a significantly deeper max drawdown (-42.86% vs -34.53%). The XGBoost model's tree-based nature proves more robust to market noise across different regimes — notably handling the VNINDEX drawdowns with stronger consistency through the `dist_SMA_100` trend filter. The AlphaForge combiner is retained in the codebase for research purposes only.
+- **VN Universe Construction** — Combines VN30 + VNMidCap via `vnstock` (VCI source); `config.usedSymbols` pins the live-inference universe to a fixed symbol list.
+- **Incremental Data Updates** — Only fetches new trading days per symbol.
+- **Rich Feature Set** — Multi-horizon log returns, volume surge ratios, annualised volatility, RSI-14, SMA/EMA distances, 52-week high distance, skip-1M return, OBV trend, price-volume divergence, and WorldQuant-style alpha factors (see `config.candidate_features` for the full pool, ~46 features).
+- **Look-ahead-safe by construction** — Every feature function in `features.py` explicitly lags its inputs so that row *T* only ever uses data available up to *T-1*.
+- **XGBoost LambdaRank** — Optimises NDCG directly for ranking quality. Selected as the production model after comparison against MSE regression, linear regression, and LSTM heads (`src/models.py`).
+- **Walk-Forward Validation** — 24-month initial training window, 6-month rolling test window, 21-day gap to avoid look-ahead bias (`generate_folds`, `walk_forward_cv`).
+- **Feature Selection** — Optional per-fold IC/IR filtering (`select_features_by_icir`) and correlation pruning within feature groups (`prune_correlated_features`), both computed on training data only.
+- **P1 Combined Entry Filter** — Market-level dispersion + trend filter that gates whether the strategy takes any positions at all on a given rebalance date (see `simulation.FilterGroup`/`StepFilter`, and `kernel.py`'s live implementation).
+- **Object-Oriented Backtest Engine** (`src/simulation.py`) — `DataEngine` for fast per-symbol/per-date lookups, `Portfolio`/`Stock` for T+3 settlement-aware position tracking, `OrderManager` for running a full strategy simulation, and `NullHypothesisTest` for a random-pick Monte Carlo baseline.
+- **Live Signal Engine** — `inference.generate_paper_trade_signals()` produces daily Buy/Hold/Sell/NOT_IN_UNIVERSE lists plus a full ranked score table.
+- **Minimal Live Dashboard** — The Streamlit app only shows today's P1 output: either the top-20 ranked buy list, or a "hold cash" message when the entry filter is active. No backtesting or AI commentary UI is exposed live.
+- **Experimental: AlphaForge Factor Combiner** — Dynamic Ridge regression with rolling RankIC/ICIR factor gating (`src/deep_combiner.py`, `predict_alphaforge` in `models.py`). Found to underperform the XGBoost baseline out-of-sample; retained for research only.
+- **Experimental: GP Alpha Mining** — Genetic programming (`gplearn`) to evolve new alpha expressions (`mine_gp_factors` in `models.py`, enable with `use_gp=True`).
 
 ---
 
@@ -105,22 +82,15 @@ All results are **out-of-sample** from walk-forward cross-validation (24-month i
 
 **🔗 [https://cross-sectional-ranking-vn.streamlit.app/](https://cross-sectional-ranking-vn.streamlit.app/)**
 
-The dashboard lets you:
-- Run backtests interactively on the VN universe
-- View today's Buy / Hold / Sell signals in real time
-- Explore feature importance and IC charts
-- Get AI-powered market commentary via Gemini
+The live page is intentionally minimal: it shows a title, a data-cutoff caption, and either today's top-20 P1 signal table or a "hold cash" notice. Backtesting, feature diagnostics, and the earlier AI-commentary panel are research-notebook tools now, not part of the public page.
 
 ---
 
 ## ⚙️ Installation
 
 ```bash
-# Clone the repository
 git clone https://github.com/phamhuyphong-quant/cross_sectional_rank_vn.git
 cd cross_sectional_rank_vn
-
-# Install dependencies
 pip install -r requirements.txt
 ```
 
@@ -130,15 +100,15 @@ pip install -r requirements.txt
 |---|---|
 | `vnstock` | Vietnamese market data (VCI source) |
 | `xgboost` | LambdaRank model |
-| `gplearn` | Symbolic regression for GP alpha mining |
-| `streamlit` | Interactive dashboard |
+| `gplearn` | Symbolic regression for GP alpha mining (dev only) |
+| `streamlit` | Live signal page |
 | `pandas`, `numpy` | Data processing |
-| `optuna` | Hyperparameter optimisation |
 | `scipy` | Spearman rank correlation (IC) |
-| `plotly` | Interactive charts in dashboard |
-| `google-genai` | Gemini AI commentary in dashboard |
+| `matplotlib`, `plotly` | Charts (research notebooks) |
+| `huggingface_hub` | Publishing/reading `today_signals.parquet` |
+| `statsmodels` | Statistical research (dev only) |
 
-> **Environment note:** This project was developed and tested on a Linux-based environment. If you are running it on Windows, some shell commands in the notebooks may not work as expected — consider using WSL or a Linux container.
+> **Environment note:** Developed and tested on Linux. On Windows, prefer WSL for shell-dependent notebook cells.
 
 ---
 
@@ -153,109 +123,97 @@ symbols = get_tags()
 update_market_data("data/market_data.parquet", symbols)
 ```
 
-Or run `notebooks/01_Data_Collection.ipynb` for an interactive walkthrough.
+Automated daily via `.github/workflows/daily_update.yml`.
 
-### 2. Feature Engineering
+### 2. Feature & Target Construction
 
 ```python
-from src.features import build_features, build_targets, target_generating_ranking
+from src.features import build_features
 
-# Build all technical features and forward-return targets
-# Note: build_features() calls WorldQuantAlphas.generate_all() internally —
-# do NOT call WorldQuantAlphas manually on df_raw before passing it here.
-df = build_features(df_raw)
-df = build_targets(df)
-df = target_generating_ranking(df)
+# generate_target=True (default): also builds forward-return targets
+# (next_1m_ret, next_1w_ret, target_bucket, target_magnitude) and drops
+# any row where those can't be computed yet (the most recent ~21 trading
+# days per symbol) — use this for TRAINING data.
+df_train = build_features(df_raw, adtv_limit=2_500_000)
+
+# generate_target=False: skips target construction entirely, so the most
+# recent trading date's features are NOT dropped — use this to get the
+# true latest date for live PREDICTION.
+df_latest = build_features(df_raw, adtv_limit=2_500_000, generate_target=False)
 ```
 
-Or run `notebooks/02_Feature_EDA.ipynb`.
+> `regime_bucket_monthly`, `market1m_ema21`, and `market3m_ema63` (used by the P1 filter) are computed unconditionally inside `build_features`, so they exist identically in both `df_train` and `df_latest`.
 
 ### 3. Select Features
-
-Pass `candidate_features` from `config.py` to `walk_forward_cv`. With `icir_filter=True`, each fold automatically selects its own active subset — no manual feature selection needed.
 
 ```python
 from config import candidate_features
 ```
 
-`final_features` is kept in `config.py` as a legacy static reference (the 20-feature set previously selected by hand in notebook 02), but it is no longer the operative list.
+Pass the full pool to `walk_forward_cv`; with `icir_filter=True`, each fold selects its own active subset automatically. `final_features` in `config.py` is a legacy static reference (an earlier hand-picked 20-feature set) and is no longer the operative list.
 
-
-### 4. Model Training
+### 4. Model Training (Walk-Forward CV)
 
 ```python
 from src.models import walk_forward_cv
 
-# Production: XGBoost with per-fold IC/IR filter + correlation pruning (recommended)
-results = walk_forward_cv(df, candidate_features, initial_train_months=24, test_months=6, gap_days=21, icir_filter=True, corr_prune=True)
-
-# Experimental: with GP alpha mining
-results = walk_forward_cv(df, candidate_features, initial_train_months=24, test_months=6, gap_days=21, icir_filter=True, corr_prune=True, use_gp=True)
-
-# Experimental: with AlphaForge dynamic factor combiner (unstable out-of-sample)
-results = walk_forward_cv(df, candidate_features, initial_train_months=24, test_months=6, gap_days=21, model='alphaforge')
+results = walk_forward_cv(
+    df, candidate_features,
+    initial_train_months=24, test_months=6, gap_days=21,
+    icir_filter=True, corr_prune=True,
+)
 ```
 
-Or run `notebooks/03_Model_Training.ipynb`.
+See `notebooks/NTH RESEARCH/Saving DataFrame.ipynb` for the exact configuration used to produce the published `df_predict_ndcg` results (`icir_filter=False`, `corr_prune=True`).
 
-### 5. Hyperparameter Tuning (Optional)
-
-```python
-from src.models import optimize_xgboost_ranker
-
-best_params = optimize_xgboost_ranker(df, candidate_features, n_trials=50)
-results = walk_forward_cv(df, candidate_features, model_params=best_params,
-                          initial_train_months=24, test_months=6, gap_days=21, icir_filter=True)
-```
-
-### 6. Backtest & Evaluation
+### 5. Backtest (P1 filter applied)
 
 ```python
-from src.evaluation import simulate_portfolio, print_performance_report, plot_equity_curves
+from src.simulation import build_data_engines, OrderManager, FilterGroup, StepFilter
 
-result = simulate_portfolio(
-    df=results,
-    model=None,           # use pred_score column from walk_forward_cv
-    features=None,
-    initial_capital=100_000,
-    topk=10,
-    time_of_rebalance='M',
-    trend_filter_col='dist_SMA_100',
-    allocation='equal',
+engine_raw, engine_predict, _ = build_data_engines(df_raw, df_predict_ndcg)
+
+p1_filter = FilterGroup(
+    condition="market1m_ema21 - market3m_ema63 < 0 and regime_bucket_monthly == 'Q1'",
+    transformations=[StepFilter(0)],   # 0 = fully in cash when triggered
 )
 
-plot_equity_curves(result, labels=['XGBoost Baseline'])
-metrics = print_performance_report(result, initial_capital=100_000)
+manager = OrderManager(initial=100_000, topk=20, df_raw=engine_raw,
+                        df_predict=engine_predict, regime_filter=p1_filter)
+manager.run_strategy(allocation_strategy="equal")
 ```
 
-Or run `notebooks/04_Backtesting_and_Evaluation.ipynb`.
+See `notebooks/NTH RESEARCH/Q1 and Q2.ipynb` for the full P1/P2/P3 comparison and `notebooks/NTH RESEARCH/Graphs and Extraneous Information.ipynb` for the walk-forward-fold diagram and data-quality checks.
 
-### 7. Live Signal Generation
+### 6. Live Signal Generation
 
 ```python
 from src.inference import generate_paper_trade_signals
 
-buy, hold, sell, not_in_universe, rankings = generate_paper_trade_signals(
-    df=df,
-    current_portfolio=['VNM', 'FPT', 'HPG'],
+buy, hold, sell, not_in_universe, ranked_today = generate_paper_trade_signals(
+    df=df,                       # combined train + latest-date rows (see kaggle_kernel/kernel.py)
+    current_portfolio=[],
     features=candidate_features,
-    buy_n=30,
-    trend_filter_col='dist_SMA_100',
-    icir_filter=True,
+    buy_n=20,                    # matches P1's Top-K
+    trend_filter_col=None,       # P1's only filter is the market-level one, not a per-stock trend filter
+    target_col='target_magnitude',
+    icir_filter=False,
     corr_prune=True,
 )
 ```
 
-### 8. Dashboard
+This is exactly what `kaggle_kernel/kernel.py` runs daily — see that file for how it stitches together a target-bearing training frame with the true latest date's (unlabeled) feature row, so the model always predicts on today's data even though training necessarily lags ~21 days.
 
-The dashboard is **cloud-hosted** — access it directly at the link above. It is not designed for local execution as it relies on Streamlit Cloud secrets (`GITHUB_TOKEN`, `GOOGLE_API_KEY`).
+### 7. Live Dashboard
+
+The Streamlit app (`src/app.py`) reads the daily-published `today_signals.parquet` from the Hugging Face dataset and renders either the top-20 table or a "hold cash" notice. It is cloud-hosted at the link above; running it locally just needs `streamlit run src/app.py` and, if the HF dataset is private, an `HF_TOKEN` in `.streamlit/secrets.toml`.
 
 ---
 
-## 📊 Model Architecture
+## 📊 Pipeline Architecture
 
 ```
-Raw OHLCV Data (VN universe, daily, from 2018)
+Raw OHLCV Data (VN universe, daily, from 2018) — filtered to config.usedSymbols
       │
       ▼
 Feature Engineering (src/features.py + src/alpha_mining.py)
@@ -265,77 +223,65 @@ Feature Engineering (src/features.py + src/alpha_mining.py)
   ├── Volume:          weekly & monthly surge ratios, OBV trend
   ├── Oscillator:      RSI-14
   ├── Price Structure: 52-week high distance, price-volume divergence
-  └── Alpha Factors:   WorldQuant Alpha #001, #002, #006, #007, #013, #016,
-                       #024, #028, #040, #101, #103, #200, #201, #202
+  ├── Market Regime:   regime_bucket_monthly, market1m_ema21, market3m_ema63 (→ P1 filter)
+  └── Alpha Factors:   WorldQuant Alpha #001–#202 (see config.FEATURE_GROUPS["wq_features"])
+      │
+      ├── generate_target=True  → build_targets + make_magnitude_label → TRAINING frame
+      │                            (drops most recent ~21 trading days per symbol —
+      │                             forward return isn't knowable yet)
+      └── generate_target=False → feature-only frame, full history including TODAY
       │
       ▼
 Candidate Features: full pool from config.candidate_features (~46 features)
       │
       ▼
-Per-fold IC/IR Filter (icir_filter=True inside walk_forward_cv)
-  └── Each fold selects its own active subset: |IC IR| > 0.02 on training window only
+Per-fold IC/IR Filter (icir_filter) + Correlation Pruning (corr_prune)
+  └── Computed on training window only — zero look-ahead
       │
       ▼
-Per-fold Correlation Pruning (corr_prune=True inside walk_forward_cv)
-  └── Within each FEATURE_GROUPS group, drops the lower-|IC IR| feature from any pair
-      with |Spearman corr| ≥ 0.75 — computed on training window only, zero look-ahead
-      │
-      ▼
-Target: Risk-Adjusted Quintile (next_1m_ret / volatility_3m → qcut into 5 bins per day)
+Target: target_magnitude (0–100 scaled, risk-adjusted) or target_quintile
       │
       ▼
 Walk-Forward Cross-Validation (src/models.py)
   ├── Initial train window: 24 months
   ├── Test window:          6 months (rolling)
-  └── Gap:                  21 days (prevents look-ahead)
+  └── Gap:                  21 days
       │
       ▼
 XGBoost LambdaRank (rank:ndcg)   ✅ Production
-[Experimental: AlphaForge Factor Combiner — Ridge + IC gating, unstable OOS, not recommended for production]
+[Experimental: AlphaForge Ridge combiner, LSTM head — not used in production]
       │
       ▼
-Realistic Backtest (src/evaluation.py)
-  ├── T+3 settlement, 21-trading-day rebalancing (aligned to target horizon)
-  ├── Trailing stop (-10%), take-profit (+50%)
-  └── Transaction costs (fee + tax + per-share fee)
+P1 Combined Entry Filter (src/simulation.py FilterGroup/StepFilter)
+  └── Cash when regime_bucket_monthly == "Q1" AND market1m_ema21 - market3m_ema63 < 0
       │
       ▼
-Daily Cross-Sectional Ranking → Buy / Hold / Sell Signals (src/inference.py)
+Daily Ranking → Top-20 Buy Signal, or "hold cash" (src/inference.py, kaggle_kernel/kernel.py)
+      │
+      ▼
+Upload today_signals.parquet → Hugging Face dataset → Streamlit app (src/app.py)
 ```
-
----
-
-## 📈 Signal Logic
-
-| Signal | Condition |
-|---|---|
-| 🟢 **BUY** | Ranks in top `buy_n` (default: 30) AND `dist_SMA_100 > 1.0` (trend filter) AND not already held |
-| 🔵 **HOLD** | Currently held AND ranks within top `buy_n` |
-| 🟠 **SELL** | Currently held BUT falls outside the `buy_n` threshold |
-| 🔴 **NOT IN UNIVERSE** | Currently held BUT no longer in today's VN universe |
 
 ---
 
 ## 🔬 Evaluation Metrics
 
-- **Win Rate Lift** — Top-quintile pick win rate vs. market baseline (percentage of picks with positive 1-month return)
-- **Information Coefficient (IC)** — Spearman correlation of each feature with next-month returns; reported as IC Mean, IC Std, and IC IR (Mean/Std)
-- **NDCG Score** — Normalised Discounted Cumulative Gain; the ranking quality metric directly optimised by the model, computed daily across the OOS test period
-- **CAGR / Sharpe / Sortino / Calmar / Max Drawdown** — Full risk-adjusted performance metrics computed by `evaluation.print_performance_report()` on the simulated equity curve
-- **Feature Importance** — XGBoost gain-based feature attribution
-- **Model IC** — Spearman correlation between the model's `pred_score` and actual `next_1m_ret`, computed via `evaluation.compute_model_ic()`
+- **Win Rate Lift** — Top-quintile pick win rate vs. market baseline.
+- **Information Coefficient (IC)** — Spearman correlation of each feature with next-month returns; reported as IC Mean, IC Std, IC IR.
+- **NDCG Score** — The ranking-quality metric directly optimised by the model.
+- **CAGR / Sharpe / Sortino / Calmar / Max Drawdown** — `evaluation.print_performance_report()` on a simulated equity curve.
+- **Feature Importance** — XGBoost gain-based attribution (`evaluation.plot_feature_importances`).
+- **Model IC** — Spearman correlation between `pred_score` and realised `next_1m_ret` (`evaluation.compute_model_ic`).
 
 ---
 
 ## ☁️ Automation (GitHub Actions)
 
-Three workflows keep the system running automatically:
-
 | Workflow | Schedule | Purpose |
 |---|---|---|
-| `daily_update.yml` | Daily (market close) | Fetches new OHLCV data, updates the Parquet store |
-| `precompute_model.yml` | After daily data update (or manual) | Runs Kaggle kernel, recomputes walk-forward artifacts, and uploads predictions to Hugging Face |
-| `keep_alive.yml` | Periodic | Pings the Streamlit app to prevent cold-start shutdowns |
+| `daily_update.yml` | Weekdays, after market close | Fetches new OHLCV data, commits to `data-storage` branch |
+| `precompute_model.yml` | After `daily_update.yml` succeeds (or manual) | Pushes `kaggle_kernel/kernel.py` to Kaggle, waits for it to finish computing and uploading today's P1 signal |
+| `keep_alive.yml` | Every 6 hours | Pings the Streamlit app to prevent cold-start sleep |
 
 ---
 
@@ -354,8 +300,7 @@ This project is licensed under the **GNU General Public License v3.0** — see t
 
 ### Acknowledgments
 
-This project utilises the following open-source libraries:
-* **gplearn**: Licensed under GNU GPL v3.0. Special thanks to the authors for providing the symbolic regression framework used in this project's GP alpha mining.
-* **vnstock**: For providing API access to Vietnam stock market data.
-* **XGBoost & Scikit-learn**: For the core machine learning and ranking implementation.
-* **arXiv:2406.18394**: Research paper that motivated the AlphaForge factor combination architecture exploration.
+* **gplearn** — Licensed under GNU GPL v3.0. Used for GP alpha mining.
+* **vnstock** — Vietnam stock market data access.
+* **XGBoost & Scikit-learn** — Core ranking and ML implementation.
+* **arXiv:2406.18394** — Research paper that motivated the AlphaForge factor combination exploration.

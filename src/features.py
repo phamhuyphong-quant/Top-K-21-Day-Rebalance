@@ -229,22 +229,71 @@ def limit_bias(df, d=60):
     df["limit_bias_60d"] = up_rate - dn_rate
     return df
 
+def robust_market_regime_pipeline_monthly(df, return_horizon=21, rolling_window=63, num_buckets=4,
+                                            liquidity_mask=None):
+    """
+    Same as robust_market_regime_pipeline, but dispersion (MAD) is computed on
+    ~1-month (return_horizon-day) forward-looking-safe returns instead of
+    1-day returns.
 
-def herding_dispersion(df):
+    Why: the original daily-MAD regime measures day-to-day co-movement, which
+    is a different (and much noisier/faster) statistic than how much stocks'
+    *monthly* returns end up separated from each other -- which is the
+    horizon your ranker's target (next_1m_ret) actually lives on. Using the
+    same horizon for the regime signal as for the target return makes the
+    regime bucket a much more relevant conditioning variable for quintile
+    spread analysis.
+
+    Look-ahead safety: at row t, the return used is close[t-1] vs
+    close[t-1-return_horizon] -- i.e. an already-realized return_horizon-day
+    return as of t-1, fully in the past relative to date t. It does NOT
+    overlap with the forward next_1m_ret window starting at t.
+
+    liquidity_mask: optional boolean Series aligned to df's index. When given,
+    the cross-sectional median/MAD at each date is computed only over rows
+    flagged liquid — rows are NOT dropped, so the per-Symbol pct_change/shift
+    above still sees a continuous history regardless of which stocks are
+    liquid on any given day.
     """
-    Cross-sectional std of lagged daily returns across all symbols on each date.
-    Low value = stocks moving together (herding regime, retail-driven VN market).
-    High value = stocks diverging (stock-picking environment).
-    Same value for every symbol on a given date — pure market-regime context for XGBoost.
-    NOT a per-stock return signal, so meaningless in the deep combiner
-    (zero cross-sectional variance → no gradient signal during attention training).
-    Uses lagged close (shift 1) for look-ahead-free compliance.
-    """
-    lagged_close = df.groupby("Symbol")["close"].shift(1)
-    daily_ret = lagged_close.groupby(df["Symbol"]).pct_change()
-    df["herding_dispersion"] = daily_ret.groupby(df["date"]).transform("std")
+    df = df.copy()
+    df["_is_liquid"] = liquidity_mask.reindex(df.index) if liquidity_mask is not None else True
+
+    # Bước 1: Sắp xếp dữ liệu cấu trúc chuỗi thời gian
+    df = df.sort_values(["Symbol", "date"]).reset_index(drop=True)
+
+    # Bước 2: Tính return_horizon-day return, rồi lag 1 để tránh contamination
+    # (groupby lại trước khi shift để tránh Cross-symbol contamination)
+    # Luôn chạy trên TOÀN BỘ chuỗi liên tục (không phụ thuộc liquidity_mask).
+    monthly_ret = df.groupby("Symbol")["close"].pct_change(return_horizon)
+    df["monthly_ret_lag1"] = monthly_ret.groupby(df["Symbol"]).shift(1)
+
+    # Bước 3: Tính Robust Dispersion bằng Vectorized MAD trên monthly return.
+    # Cross-sectional theo date -> chỉ tổng hợp trên các dòng đủ thanh khoản.
+    masked_ret = df["monthly_ret_lag1"].where(df["_is_liquid"])
+    daily_median = masked_ret.groupby(df["date"]).transform("median")
+    abs_deviation = (masked_ret - daily_median).abs()
+
+    daily_mad = abs_deviation.groupby(df["date"]).median()
+
+    # Bước 4: Làm mượt bằng Rolling Mean để xác định Regime bền vững
+    rolling_mad = daily_mad.rolling(window=rolling_window, min_periods=max(1, rolling_window // 2)).mean()
+
+    # Bước 5: Tính Point-in-time Percentile qua Expanding Rank
+    pit_percentile = rolling_mad.rolling(window=252).rank(pct=True)
+
+    # Bước 6: Fixed Bins cố định thay vì để pd.cut tự tính toán
+    bin_edges = np.linspace(0, 1, num_buckets + 1)
+    bucket_labels = [f"Q{i}" for i in range(1, num_buckets + 1)]
+
+    pit_buckets = pd.cut(pit_percentile, bins=bin_edges, labels=bucket_labels, include_lowest=True)
+
+    # Bước 7: Ánh xạ kết quả trở lại DataFrame tổng
+    df["regime_disp_raw_monthly"] = df["date"].map(rolling_mad)
+    df["regime_percentile_monthly"] = df["date"].map(pit_percentile)
+    df["regime_bucket_monthly"] = df["date"].map(pit_buckets)
+
+    df = df.drop(columns=["_is_liquid"])
     return df
-
 
 def amihud_illiquidity(df):
     """
@@ -267,7 +316,7 @@ def amihud_illiquidity(df):
     df["amihud_illiquidity"] = np.log1p(illiq_21d)
     return df
 
-def adtv(df, window=20):
+def adtv(df, window=21):
     lagged_value = df.groupby('Symbol').apply(
         lambda x: (x['close'] * x['volume']).shift(1)
     ).reset_index(level=0, drop=True)
@@ -275,8 +324,102 @@ def adtv(df, window=20):
         lambda x: x.rolling(window, min_periods=window//2).mean()
     )
     return df
+def market_breadth(df, liquidity_mask=None):
+    """
+    liquidity_mask: optional boolean Series aligned to df's index. When given,
+    breadth on each date is the fraction of *liquid* stocks with positive
+    log_ret_1m, rather than the fraction across the whole (incl. illiquid)
+    universe.
+    """
+    df = df.copy()
+    mask = liquidity_mask.reindex(df.index) if liquidity_mask is not None else pd.Series(True, index=df.index)
+    masked_ret = df['log_ret_1m'].where(mask)
+    daily_breadth = masked_ret.groupby(df['date']).apply(lambda x: (x.dropna() > 0).mean()).sort_index()
+    breadth_ema21 = daily_breadth.ewm(span=21, adjust=False).mean()
+    df['breadth_ema21'] = df['date'].map(breadth_ema21)
+    breadth_ema21_df = breadth_ema21.to_frame('breadth_ema21')
+    rolling_25pct = breadth_ema21_df['breadth_ema21'].shift(1).rolling(252, min_periods=126).quantile(0.25)
+    df['breadth_25pct_threshold'] = df['date'].map(rolling_25pct)
+    df['narrow_breadth'] = df['breadth_ema21'] < df['breadth_25pct_threshold']
+    return df
+def make_magnitude_label(df, target_col='risk_adj_ret', date_col='date',
+                          scale_max=100.0, winsor_pct=0.0):
+    df = df.copy()
 
-def build_features(df, min_stocks_per_date: int = 50):
+    def _scale_one_day(g):
+        s = g[target_col]
+        lo_clip, hi_clip = s.quantile(winsor_pct), s.quantile(1 - winsor_pct)
+        s_clipped = s.clip(lo_clip, hi_clip)
+        lo, hi = s_clipped.min(), s_clipped.max()
+        if pd.isna(lo) or pd.isna(hi) or hi == lo:
+            return pd.Series(np.nan, index=g.index)
+        return (s_clipped - lo) / (hi - lo) * scale_max
+
+    df['target_magnitude'] = (
+        df.groupby(date_col, group_keys=False)
+          .apply(lambda g: _scale_one_day(g))
+    )
+    return df
+def make_adaptive_bucket_label(df, target_col='next_1m_ret', date_col='date',
+                                 target_bucket_size=20, min_buckets=2,
+                                 risk_adjust=True, vol_col='volatility_3m'):
+    """
+    Assigns each stock a bucket label (0 = worst, n_buckets-1 = best) per date,
+    with n_buckets chosen so each bucket has ~target_bucket_size stocks.
+
+    risk_adjust: if True (default), buckets are built on target_col / vol_col
+    (same construction as target_generating_ranking's risk_adj_ret) instead
+    of the raw return. Without this, the top bucket is just "highest raw
+    return," which skews toward high-beta/high-volatility names — exactly
+    the names that hurt a concentrated buy-only book in drawdowns. Set to
+    False to recover the original raw-return behavior.
+
+    vol_col: volatility column used as the risk-adjustment denominator. Must
+    already exist on df (e.g. 'volatility_3m' from build_features) — this
+    function does not compute it.
+
+    Returns df with a new 'target_bucket' column. NaN where a date has fewer
+    valid (non-NaN, non-zero-vol) observations than n_buckets — caller should
+    dropna(subset=['target_bucket']) same as target_generating_ranking does
+    for target_quintile.
+    """
+    df = df.copy()
+
+    if risk_adjust:
+        vol = df[vol_col].replace(0, np.nan)
+        score = df[target_col] / vol
+        score = score.replace([np.inf, -np.inf], np.nan)
+    else:
+        score = df[target_col]
+    df['_bucket_score'] = score
+
+    def _bucket_one_day(g):
+        n = len(g)
+        n_buckets = max(min_buckets, round(n / target_bucket_size))
+        # Need at least n_buckets valid (non-NaN) scores to form n_buckets groups.
+        if g['_bucket_score'].notna().sum() < n_buckets:
+            return pd.Series(np.nan, index=g.index)
+        # rank ascending on the (risk-adjusted) score -> highest score gets highest label
+        # NaN scores get NaN rank (na_option='keep' default) -> qcut passes them through as NaN
+        ranks = g['_bucket_score'].rank(method='first', ascending=True)
+        return pd.qcut(ranks, n_buckets, labels=False)
+
+    df['target_bucket'] = (
+        df.groupby(date_col, group_keys=False)
+          .apply(lambda g: _bucket_one_day(g))
+    )
+    df = df.drop(columns='_bucket_score')
+    return df
+
+def build_targets(df):
+    df = df.copy()
+    df['next_1m_ret'] = df.groupby('Symbol')['close'].transform(lambda x: np.log(x.shift(-21) / x))
+    df['next_1w_ret'] = df.groupby('Symbol')['close'].transform(lambda x: np.log(x.shift(-5) / x))
+    df = df.dropna(subset=['next_1m_ret', 'next_1w_ret'])
+    return df
+
+
+def build_features(df, min_stocks_per_date: int = 50, adtv_limit = None, generate_target:bool=True):
     """
     Build all features for the dataset.
 
@@ -290,7 +433,12 @@ def build_features(df, min_stocks_per_date: int = 50):
     df = df.copy()
     df = df.sort_values(["Symbol", "date"])
 
+    
+
     df = return_ln(df)
+
+ 
+
     df = volatility(df)
     df = MA(df)
     df = volume(df)
@@ -301,15 +449,78 @@ def build_features(df, min_stocks_per_date: int = 50):
     # Context / structural features for XGBoost — not return signals, not in deep combiner
     df = turnover_ratio(df)
     df = limit_bias(df)
-    df = herding_dispersion(df)
+    
     df = amihud_illiquidity(df)
-    df = adtv(df)
+
+    if generate_target:
+            df = build_targets(df)
+            # risk_adj_ret: cùng công thức risk-adjustment mà make_adaptive_bucket_label
+            # vừa dùng nội bộ để xếp target_bucket (next_1m_ret / volatility_3m) và mà
+            # target_generating_ranking dùng cho risk_adj_ret/target_quintile — tính
+            # tường minh ở đây để target_magnitude bên dưới đo cùng đại lượng risk-adjusted
+            # với target_bucket, thay vì lợi nhuận thô.
+            vol = df['volatility_3m'].replace(0, np.nan)
+            df['risk_adj_ret'] = (df['next_1m_ret'] / vol).replace([np.inf, -np.inf], np.nan)
+            
+            df = make_magnitude_label(df)
+        
+
+    # Tính ADTV nhưng CHƯA xoá dòng: các phép rolling/lag theo Symbol (bên dưới,
+    # trong WorldQuantAlphas và các hàm market-wide) cần chuỗi ngày liên tục cho
+    # từng mã, nên nếu xoá dòng ngay bây giờ sẽ tạo khoảng trống (gap) làm sai
+    # các cửa sổ rolling dài (100, 252 ngày...). Thay vào đó, dùng is_liquid như
+    # một "mask": mọi phép cross-sectional (rank/mean theo ngày) sẽ chỉ tổng hợp
+    # trên các dòng is_liquid=True, còn các phép rolling theo Symbol vẫn chạy
+    # trên toàn bộ chuỗi liên tục.
+    if adtv_limit is not None:
+        df = adtv(df)
+        is_liquid = df['adtv'] >= adtv_limit
+    else:
+        is_liquid = pd.Series(True, index=df.index)
+
     # WorldQuant alphas: WorldQuantAlphas.__init__ builds self.ldf (lagged OHLCV)
-    # internally, so generate_all() respects the same T-1 contract as the functions above.
-    wq_cols_df = WorldQuantAlphas(df).generate_all()
+    # internally, so generate_all() respects the same T-1 contract as the functions
+    # above. Cross-sectional pieces inside (rank/mean theo date, vd alpha 002, 013,
+    # 016, 040, 101, 202) chỉ tổng hợp trên rổ liquidity_mask; per-symbol rolling
+    # pieces vẫn chạy trên df đầy đủ, liên tục.
+    wq_cols_df = WorldQuantAlphas(df, liquidity_mask=is_liquid).generate_all()
     for col in wq_cols_df.columns:
         df[col] = wq_cols_df[col]
 
+    # TODO (cùng pattern): robust_market_regime_pipeline_monthly() và
+    # market_breadth() bên dưới cũng trộn per-symbol rolling (pct_change,
+    # log_ret) với cross-sectional median/mean theo date — nên áp dụng
+    # is_liquid mask tương tự thay vì dựa vào việc lọc dòng trước đó.
+
+    # Các hàm market-wide vẫn chạy trên df ĐẦY ĐỦ (chưa lọc dòng), dùng
+    # is_liquid làm mask cho phần cross-sectional — để pct_change/log_ret theo
+    # Symbol phía trong chúng không bị gãy chuỗi vì thiếu dòng.
+    df = robust_market_regime_pipeline_monthly(df, liquidity_mask=is_liquid)
+
+    # robust_market_regime_pipeline_monthly() reset lại index bên trong (sort
+    # theo Symbol,date rồi reset_index) nên is_liquid (Series ngoài) không còn
+    # canh đúng hàng nữa. Tính lại trực tiếp từ cột 'adtv' — cột thật luôn đi
+    # đúng theo hàng qua mọi lần sort/reset — thay vì tái sử dụng Series cũ.
+    is_liquid = df['adtv'] >= adtv_limit if adtv_limit is not None else pd.Series(True, index=df.index)
+
+    market_ret = df['log_ret_3m'].where(is_liquid).groupby(df['date']).mean().sort_index()
+    market_ema63 = market_ret.ewm(span=63, adjust=False).mean()
+    df['market3m_ema63'] = df['date'].map(market_ema63)
+
+    market_ret = df['log_ret_1m'].where(is_liquid).groupby(df['date']).mean().sort_index()
+    market_ema21 = market_ret.ewm(span=21, adjust=False).mean()
+    df['market1m_ema21'] = df['date'].map(market_ema21)
+
+    df = market_breadth(df, liquidity_mask=is_liquid)
+
+    # Lọc dòng thật sự CHỈ MỘT LẦN, sau khi mọi phép rolling/cross-sectional đã
+    # tính xong — ngay trước khi hình thành bucket (bucket chỉ nên hình thành
+    # trên rổ đã lọc thanh khoản; đây là phép cross-sectional theo số dòng mỗi
+    # ngày, không phải rolling, nên an toàn khi chạy trên df đã lọc).
+    if adtv_limit is not None:
+        df = df[is_liquid]
+
+ 
     feature_cols = [
         col for col in df.columns
         if col not in ["Symbol", "date", "close", "high", "low", "open", "volume"]
@@ -330,11 +541,6 @@ def build_features(df, min_stocks_per_date: int = 50):
         df = df[~thin_mask]
 
     df.index = range(1, len(df) + 1)
-    return df
-def build_targets(df):
-    df = df.copy()
-    df['next_1m_ret'] = df.groupby('Symbol')['close'].transform(lambda x: np.log(x.shift(-21) / x))
-    df['next_1w_ret'] = df.groupby('Symbol')['close'].transform(lambda x: np.log(x.shift(-5) / x))
     return df
 
 

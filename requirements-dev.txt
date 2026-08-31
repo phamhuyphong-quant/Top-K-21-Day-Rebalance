@@ -5,7 +5,6 @@ vnstock
 xgboost
 pyarrow
 scikit-learn
-optuna
 streamlit
 google-genai
 gplearn
@@ -13,3 +12,5 @@ requests
 scipy
 plotly
 huggingface_hub
+statsmodels
+torch
