@@ -271,6 +271,8 @@ def build_mega_combiner(
     )
 
 from dataclasses import dataclass
+from abc import ABC, abstractmethod
+from typing import Iterator
 
 @dataclass
 class Fold:
@@ -280,18 +282,183 @@ class Fold:
     test_start:   pd.Timestamp
     test_end:     pd.Timestamp
 
+
+def _test_len_from_ratio(eff_train_dates: int, train_percent: float) -> int:
+    """Shared ratio->test_len_dates math, used once by whichever policy needs it."""
+    return max(1, round(eff_train_dates * (1 - train_percent) / train_percent))
+
+
+class WindowPolicy(ABC):
+    """
+    Strategy interface for walk-forward window generation.
+
+    A WindowPolicy's only job is: given the sorted array of unique trading
+    dates present in the data, yield (train_date_slice, test_date_slice)
+    pairs — contiguous slices of that array — until the data runs out.
+    It knows nothing about DataFrames, liquidity filtering, or Fold objects;
+    that's generate_folds()'s job. This separation is what lets new window
+    behaviors (capped-expanding, fixed-test-length, decay-weighted, ...) be
+    added as new subclasses without touching generate_folds() or each other.
+    """
+
+    def __init__(self, initial_train_dates: int, gap_dates: int = 0):
+        if initial_train_dates < 1:
+            raise ValueError(f"initial_train_dates must be >= 1, got {initial_train_dates}")
+        if gap_dates < 0:
+            raise ValueError(f"gap_dates must be >= 0, got {gap_dates}")
+        if gap_dates >= initial_train_dates:
+            raise ValueError(
+                f"gap_dates ({gap_dates}) must be < initial_train_dates ({initial_train_dates}), "
+                "or there's no usable training data left after trimming the gap."
+            )
+        self.initial_train_dates = initial_train_dates
+        self.gap_dates = gap_dates
+
+    @abstractmethod
+    def iter_slices(self, unique_dates: np.ndarray) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+        """Yield (train_date_slice, test_date_slice) pairs, in order, until data runs out."""
+        raise NotImplementedError
+
+
+class RollingWindow(WindowPolicy):
+    """
+    Train length is FIXED at initial_train_dates for every fold. The window
+    advances by a STEP SIZE equal to the test length (not the full
+    train+test block), so:
+      - each new train window is mostly the previous train + previous test,
+        shifted forward,
+      - test windows tile back-to-back with no gaps, so every trading date
+        ends up in exactly one test window.
+
+          train1 (7) |test1(3)|
+               train2 (7, shifted by step=test_len) |test2(3)|
+                    train3 (7, shifted again)             |test3(3)|
+
+    test_len_dates is derived ONCE from train_percent (fixed ratio) and
+    never recomputed, since train length itself never changes here — the
+    ratio is naturally constant across every fold.
+    """
+
+    def __init__(self, initial_train_dates: int, train_percent: float, gap_dates: int = 0):
+        super().__init__(initial_train_dates, gap_dates)
+        if not 0.0 < train_percent < 1.0:
+            raise ValueError(f"train_percent must be between 0 and 1 (exclusive), got {train_percent}")
+        self.train_percent = train_percent
+        eff_train_dates = initial_train_dates - gap_dates
+        self.test_len_dates = _test_len_from_ratio(eff_train_dates, train_percent)
+        self.step_dates = self.test_len_dates  # how far the window advances each fold
+
+    def iter_slices(self, unique_dates: np.ndarray) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+        n_dates = len(unique_dates)
+        train_start_idx = 0
+
+        while True:
+            train_end_idx    = train_start_idx + self.initial_train_dates  # exclusive
+            train_cutoff_idx = train_end_idx - self.gap_dates               # exclusive
+            test_start_idx   = train_end_idx
+            test_end_idx     = test_start_idx + self.test_len_dates         # exclusive
+
+            # Drop (don't truncate) the last fold if there aren't enough
+            # trading dates left to fill its full train+test window.
+            if test_end_idx > n_dates:
+                return
+
+            yield (
+                unique_dates[train_start_idx:train_cutoff_idx],
+                unique_dates[test_start_idx:test_end_idx],
+            )
+
+            # Advance by step_dates (= test_len_dates), NOT the full block
+            # length, so test windows tile contiguously and train windows
+            # overlap (see class docstring).
+            train_start_idx += self.step_dates
+
+
+class ExpandingWindow(WindowPolicy):
+    """
+    Train length grows every fold: train2 = train1 + test1, train3 =
+    train2 + test2, etc. Unlike the old ratio-coupled behavior, test_len_dates
+    is FIXED for the whole run — it does NOT grow as train grows, so every
+    fold's test window is the same size regardless of how much training
+    history has accumulated:
+
+        train1 (N) | test (T) || train2=train1+test1 (N+T) | test (T) || ...
+
+    This keeps expanding vs. rolling comparisons apples-to-apples: both
+    produce the same number of folds and the same test-fold sizes, differing
+    ONLY in how much training history each fold sees.
+
+    test_len_dates can be given directly, or (for convenience) derived once
+    from train_percent applied to the INITIAL train length only — it is
+    never recomputed as train grows, unlike the old behavior.
+    """
+
+    def __init__(
+        self,
+        initial_train_dates: int,
+        test_len_dates: int | None = None,
+        train_percent: float | None = None,
+        gap_dates: int = 0,
+    ):
+        super().__init__(initial_train_dates, gap_dates)
+        if test_len_dates is None:
+            if train_percent is None:
+                raise ValueError("ExpandingWindow requires either test_len_dates or train_percent.")
+            if not 0.0 < train_percent < 1.0:
+                raise ValueError(f"train_percent must be between 0 and 1 (exclusive), got {train_percent}")
+            eff_train_dates = initial_train_dates - gap_dates
+            test_len_dates = _test_len_from_ratio(eff_train_dates, train_percent)
+        if test_len_dates < 1:
+            raise ValueError(f"test_len_dates must be >= 1, got {test_len_dates}")
+        self.test_len_dates = test_len_dates
+
+    def iter_slices(self, unique_dates: np.ndarray) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+        n_dates = len(unique_dates)
+        # `boundary_idx` = number of dates (from index 0) used as train so
+        # far. Test always picks up right after it, and is always the same
+        # fixed length.
+        boundary_idx = self.initial_train_dates
+
+        while boundary_idx < n_dates:
+            train_cutoff_idx = boundary_idx - self.gap_dates  # exclusive
+            test_start_idx   = boundary_idx
+            test_end_idx     = test_start_idx + self.test_len_dates  # exclusive
+
+            # Drop (don't truncate) the last fold if there aren't enough
+            # trading dates left to fill its full test window.
+            if test_end_idx > n_dates:
+                return
+
+            yield (
+                unique_dates[0:train_cutoff_idx],
+                unique_dates[test_start_idx:test_end_idx],
+            )
+
+            # Next boundary extends to the end of this fold's test window,
+            # so this fold's test dates fall inside the NEXT fold's train
+            # automatically. test_len_dates itself never changes.
+            boundary_idx = test_end_idx
+
+
 def generate_folds(
     df: pd.DataFrame,
-    initial_train_months: int = 12,
-    test_months: int = 6,
-    gap_days: int = 21,
+    window_policy: WindowPolicy,
     # --- per-fold liquidity filter ---
     liquidity_filter: bool = False,
     adequate_adtv: int = 2_500_000,
 ) -> list[Fold]:
     """
     Produces walk-forward fold splits. Completely model-agnostic.
-    gap_days: buffer between train cutoff and test start to avoid leakage.
+
+    All window-shape decisions (how train/test slices are derived, how the
+    window advances) live in `window_policy` (a WindowPolicy instance, e.g.
+    RollingWindow or ExpandingWindow) — this function's only job is to turn
+    the (train_date_slice, test_date_slice) pairs it yields into actual
+    Fold objects, applying the optional per-fold liquidity filter.
+
+    IMPORTANT: all lengths are counts of UNIQUE TRADING DATES present in df,
+    not calendar days — see the docstrings on WindowPolicy subclasses for
+    how each one derives its slices.
 
     Liquidity filter (optional)
     ---------------------------
@@ -306,21 +473,19 @@ def generate_folds(
         so the model is never trained on stocks it couldn't trade at that
         point in time.
     """
-    min_date = df["date"].min()
-    max_date = df["date"].max()
-    current_train_end = min_date + pd.DateOffset(months=initial_train_months)
-    folds, fold_num = [], 1
+    # Sorted array of unique trading dates actually present in the data.
+    # All fold boundaries are computed as positions in this array, not as
+    # calendar-day offsets — so fold sizes are exact in terms of real data.
+    unique_dates = np.sort(df["date"].unique())
 
-    while current_train_end < max_date:
-        train_cutoff = current_train_end - pd.Timedelta(days=gap_days)
-        test_start   = current_train_end
-        test_end     = test_start + pd.DateOffset(months=test_months)
+    def _make_fold(fold_num, train_date_slice, test_date_slice):
+        """Build train_df/test_df from contiguous slices of unique_dates."""
+        train_lo, train_hi = train_date_slice[0], train_date_slice[-1]
+        test_lo,  test_hi  = test_date_slice[0],  test_date_slice[-1]
 
-        train_df = df[df["date"] <= train_cutoff].copy()
-        test_df  = df[(df["date"] >= test_start) & (df["date"] < test_end)].copy()
+        train_df = df[(df["date"] >= train_lo) & (df["date"] <= train_hi)].copy()
+        test_df  = df[(df["date"] >= test_lo)  & (df["date"] <= test_hi)].copy()
 
-        # ── Per-fold liquidity filter (before qid assignment) ─────────────
-        # Applied before qid so group numbers are contiguous after filtering.
         if liquidity_filter and not test_df.empty:
             train_df, test_df = _filter_fold_by_liquidity(
                 train_df, test_df,
@@ -328,17 +493,23 @@ def generate_folds(
                 adequate_adtv=adequate_adtv,
             )
 
-        # qid assignment lives here, not in each model
         train_df["qid"] = train_df.groupby("date").ngroup()
         test_df["qid"]  = test_df.groupby("date").ngroup()
 
-        if not test_df.empty:
-            folds.append(Fold(fold_num, train_df, test_df, test_start, test_end))
+        if test_df.empty:
+            return None
+        # test_start/test_end are the actual first/last trading dates in
+        # this fold's test window (real dates, not computed timestamps).
+        return Fold(fold_num, train_df, test_df, pd.Timestamp(test_lo), pd.Timestamp(test_hi))
 
-        current_train_end = test_end
-        fold_num += 1
+    folds = []
+    for fold_num, (train_slice, test_slice) in enumerate(window_policy.iter_slices(unique_dates), start=1):
+        fold = _make_fold(fold_num, train_slice, test_slice)
+        if fold is not None:
+            folds.append(fold)
 
     return folds
+
 def _daily_precision_at_k(
     test_df: pd.DataFrame,
     top_k: int,
@@ -884,9 +1055,10 @@ def walk_forward_cv(
     features: list[str],
     model: str = "xgboost_ndcg",          # "xgboost" | "alphaforge"
     model_params: dict | None = None,
-    initial_train_months: int = 12,
-    test_months: int = 6,
-    gap_days: int = 21,
+    initial_train_dates: int = 252,
+    train_percent: float = 0.7,
+    gap_dates: int = 21,
+    window_mode: str = "expanding",   # "expanding" | "rolling"
     use_gp: bool = False,
     # --- Per-fold IC/IR feature filter (no look-ahead bias) ---
     icir_filter: bool = False,
@@ -902,7 +1074,7 @@ def walk_forward_cv(
     nonskip_features: list[str] | None = None,
     # --- Buy-only book size for precision@k / excess-return diagnostics ---
     top_k: int = 20,
-) -> pd.DataFrame:
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Orchestrates walk-forward CV. model= selects the prediction path:
       "xgboost"    → XGBRanker on hand-crafted + optional GP features
@@ -957,7 +1129,9 @@ def walk_forward_cv(
     df = df.sort_values(["date", "Symbol"])
 
     min_date           = df["date"].min()
-    initial_train_end  = min_date + pd.DateOffset(months=initial_train_months)
+    max_date           = df["date"].max()
+    unique_dates       = np.sort(df["date"].unique())
+    initial_train_end  = pd.Timestamp(unique_dates[min(initial_train_dates, len(unique_dates) - 1)])
 
     # --- One-time GP mining (fit on initial window, transform full df) ---
     gp_cols = []
@@ -972,11 +1146,29 @@ def walk_forward_cv(
             raise ValueError("alphaforge requires WQ_Alpha_* columns. Call build_features() first.")
 
     # --- Fold generation (liquidity filter applied per-fold inside) -------
+    # window_mode selects which WindowPolicy to build. Both policies are
+    # seeded from train_percent for backward-compatible defaults, but only
+    # RollingWindow keeps that ratio fixed across every fold — ExpandingWindow
+    # uses train_percent once (at fold 1) just to pick test_len_dates, then
+    # holds it fixed as train grows. See WindowPolicy subclasses for details.
+    if window_mode == "rolling":
+        window_policy = RollingWindow(
+            initial_train_dates=initial_train_dates,
+            train_percent=train_percent,
+            gap_dates=gap_dates,
+        )
+    elif window_mode == "expanding":
+        window_policy = ExpandingWindow(
+            initial_train_dates=initial_train_dates,
+            train_percent=train_percent,
+            gap_dates=gap_dates,
+        )
+    else:
+        raise ValueError(f"window_mode must be 'expanding' or 'rolling', got {window_mode!r}")
+
     folds = generate_folds(
         df,
-        initial_train_months=initial_train_months,
-        test_months=test_months,
-        gap_days=gap_days,
+        window_policy=window_policy,
         liquidity_filter=liquidity_filter,
         adequate_adtv=adequate_adtv,
     )
