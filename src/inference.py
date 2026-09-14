@@ -46,7 +46,19 @@ def generate_paper_trade_signals(
     latest_date = df['date'].max()
     
     # 2. Split Data
-    train_df = df[(df['date'] < latest_date) & (df[target_col].notna())].copy()
+
+    LOOKBACK_DAYS = 735
+
+    all_dates = df.loc[df['date'] < latest_date, 'date'].unique()
+    all_dates.sort()
+    window_dates = all_dates[-LOOKBACK_DAYS:]  # last N trading dates before today
+    cutoff_date = window_dates[0] if len(window_dates) else None
+
+    train_df = df[
+        (df['date'] < latest_date) &
+        (df['date'] >= cutoff_date) &
+        (df[target_col].notna())
+    ].copy()
     inference_df = df[df['date'] == latest_date].copy()
     
     if inference_df.empty:
