@@ -50,7 +50,7 @@ def generate_paper_trade_signals(
     LOOKBACK_DAYS = 735
 
     all_dates = df.loc[df['date'] < latest_date, 'date'].unique()
-    all_dates.sort()
+    all_dates = sorted(all_dates) 
     window_dates = all_dates[-LOOKBACK_DAYS:]  # last N trading dates before today
     cutoff_date = window_dates[0] if len(window_dates) else None
 
