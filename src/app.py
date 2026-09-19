@@ -50,7 +50,6 @@ else:
         column_labels = {
             "Symbol": "Mã cổ phiếu",
             "rank": "Thứ hạng",
-            "live_score": "Điểm số do mô hình dự báo",
         }
         display_cols = [c for c in column_labels if c in today_signals.columns]
         display_df = (
@@ -58,4 +57,5 @@ else:
             .rename(columns=column_labels)
             .reset_index(drop=True)
         )
+        display_df["Tỉ lệ vốn phân bổ"] = "5%"
         st.dataframe(display_df, use_container_width=True, hide_index=True)
