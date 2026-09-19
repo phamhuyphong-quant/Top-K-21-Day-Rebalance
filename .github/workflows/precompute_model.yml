@@ -1,10 +1,6 @@
   name: Precompute Model Artifacts
 
   on:
-    workflow_run:
-      workflows: ["Daily VN Data Update"]
-      types:
-        - completed
     workflow_dispatch:
 
   jobs:
@@ -12,8 +8,6 @@
       runs-on: ubuntu-latest
       permissions:
         contents: write
-      if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
-
       steps:
         - name: Checkout main branch
           uses: actions/checkout@v4
