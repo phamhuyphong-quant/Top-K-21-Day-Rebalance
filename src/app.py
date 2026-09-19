@@ -28,9 +28,9 @@ def load_today_signals(_date_key: str = None):
         return None
 
 
-st.title("Scientific Research")
+st.title("ỨNG DỤNG MÔ HỌC MÁY XẾP HẠNG KẾT HỢP BỘ LỌC ĐIỂM VÀO LỆNH TRÊN THỊ TRƯỜNG CHỨNG KHOÁN VIỆT NAM")
 
-st.caption("This website is intended for research and educational purposes only.")
+st.caption("Các dự báo tín hiệu trên trang web này chỉ sử dụng cho mục đích nghiên cứu và học thuật. Không được xem là lời khuyên đầu tư. Người dùng chịu trách nhiệm về quyết định đầu tư của mình.")
 
 with st.spinner("Loading today's P1 signal..."):
     today_signals = load_today_signals(_date_key=_today_vn())
@@ -40,13 +40,22 @@ if today_signals is None or today_signals.empty:
 else:
     signal_date = today_signals["signal_date"].iloc[0] if "signal_date" in today_signals.columns else None
     if signal_date:
-        st.caption(f"📅 Signals based on data up to {signal_date}")
+        st.caption(f"📅 Tín hiệu được tạo ra sử dụng dữ liệu đến ngày {signal_date}")
 
     filter_active = bool(today_signals["filter_active"].iloc[0]) if "filter_active" in today_signals.columns else False
 
     if filter_active:
-        st.warning("🛑 **Hold cash — no buys today**\n\nP1's combined market filter is active.")
+        st.warning("🛑 **Giữ tất cả tiền mặt — không mua hôm nay**\n\nBộ lọc P1 đang được kích hoạt.")
     else:
-        display_cols = [c for c in ["rank", "Symbol", "live_score"] if c in today_signals.columns]
-        display_df = today_signals.sort_values("rank")[display_cols].reset_index(drop=True)
+        column_labels = {
+            "Symbol": "Mã cổ phiếu",
+            "rank": "Thứ hạng",
+            "live_score": "Điểm số do mô hình dự báo",
+        }
+        display_cols = [c for c in column_labels if c in today_signals.columns]
+        display_df = (
+            today_signals.sort_values("rank")[display_cols]
+            .rename(columns=column_labels)
+            .reset_index(drop=True)
+        )
         st.dataframe(display_df, use_container_width=True, hide_index=True)
