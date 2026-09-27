@@ -55,7 +55,8 @@ project/
 │   ├── precompute_model.yml   # Pushes kernel.py to Kaggle after data update, waits for completion
 │   └── keep_alive.yml         # Pings the Streamlit app to prevent cold-start sleep
 ├── config.py               # candidate_features, FEATURE_GROUPS, BASE_MODEL_PARAMS, usedSymbols
-└── requirements.txt
+├── requirements.txt
+└── requirements-dev.txt
 ```
 
 ---
@@ -91,7 +92,7 @@ The live page is intentionally minimal: it shows a title, a data-cutoff caption,
 ```bash
 git clone https://github.com/phamhuyphong-quant/Top-K-21-Day-Rebalance.git
 cd Top-K-21-Day-Rebalance
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 ```
 
 **Core dependencies:**
