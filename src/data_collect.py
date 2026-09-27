@@ -1,5 +1,5 @@
 from vnstock import Reference
-from vnstock.ui import Market
+from vnstock import Market
 import pandas as pd
 from datetime import datetime
 import numpy as np
@@ -113,15 +113,14 @@ def _fetch_quote(symbol: str, start_d: str, end_d: str) -> pd.DataFrame | None:
     so the caller can try a fallback source.
     """
     while True:
-        df = Market().equity(symbol).ohlcv(start=start_d,end=end_d,
-                                           count = (
-                                        datetime.strptime(end_d, "%Y-%m-%d") -
-                                          datetime.strptime(start_d, "%Y-%m-%d")).days
-                                           
-                                           ,interval='1D')
+        df = Market().equity(symbol).ohlcv(
+            start=start_d,
+            end=end_d,
+            interval="1D",
+        )
 
         if df is None or df.empty:
-            log.warning("! %s [%s] — no data returned", symbol)
+            log.warning("! %s — no data returned", symbol)
             return None
 
         df = df.rename(columns={"time": "date"})
@@ -334,7 +333,7 @@ def fetch_indicator_data(
 
     try:
         log.info("→ %s fetching", ind_symbol)
-        df = Market().index(ind_symbol).ohlcv(start=start_date, end=today_str, interval="1D",count = 5000)
+        df = Market().index(ind_symbol).ohlcv(start=start_date, end=today_str, interval="1D")
 
         if df is None or df.empty:
             log.error("✗ %s — no data returned.", ind_symbol)
