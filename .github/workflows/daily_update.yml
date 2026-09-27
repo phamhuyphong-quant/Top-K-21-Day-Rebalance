@@ -27,7 +27,7 @@ jobs:
           python-version: '3.11'
 
       - name: 📦 Install dependencies
-        run: pip install vnstock pandas pyarrow
+        run: pip install vnstock pandas pyarrow --extra-index-url https://vnstocks.com/api/simple
 
       - name: 📥 Checkout source code from main
         uses: actions/checkout@v4

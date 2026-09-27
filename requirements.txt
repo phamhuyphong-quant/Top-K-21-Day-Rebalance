@@ -1,13 +1,4 @@
-pandas
-numpy
-matplotlib
-vnstock
-xgboost
-pyarrow
-scikit-learn
 streamlit
-google-genai
+pandas
+pyarrow
 requests
-scipy
-plotly
-huggingface_hub

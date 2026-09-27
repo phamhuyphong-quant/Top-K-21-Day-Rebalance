@@ -1,16 +1,16 @@
-pandas
+-r requirements.txt
+
 numpy
 matplotlib
 vnstock
 xgboost
-pyarrow
 scikit-learn
-streamlit
 google-genai
-gplearn
-requests
 scipy
 plotly
 huggingface_hub
+gplearn
 statsmodels
 torch
+
+--extra-index-url https://vnstocks.com/api/simple
