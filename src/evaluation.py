@@ -127,6 +127,9 @@ def plot_equity_curves(*results, labels=None, normalize=False, regime_colors=Non
 
         for _, group in df_regime.groupby('group_id'):
             regime = group['regime_bucket_monthly'].iloc[0]
+            if regime == 'none':
+                continue
+
             start_date = group['date'].iloc[0]
             end_date = group['date'].iloc[-1]
             
