@@ -28,9 +28,9 @@ def load_today_signals(_date_key: str = None):
         return None
 
 
-st.title("ỨNG DỤNG MÔ HỌC MÁY XẾP HẠNG KẾT HỢP BỘ LỌC ĐIỂM VÀO LỆNH TRÊN THỊ TRƯỜNG CHỨNG KHOÁN VIỆT NAM")
+st.title("APPLICATION OF A MACHINE LEARNING RANKING MODEL COMBINED WITH AN ENTRY-POINT FILTER ON THE VIETNAMESE STOCK MARKET")
 
-st.caption("Các dự báo tín hiệu trên trang web này chỉ sử dụng cho mục đích nghiên cứu và học thuật. Không được xem là lời khuyên đầu tư. Người dùng chịu trách nhiệm về quyết định đầu tư của mình.")
+st.caption("The signal forecasts on this website are for research and academic purposes only. They should not be regarded as investment advice. Users are responsible for their own investment decisions.")
 
 with st.spinner("Loading today's P1 signal..."):
     today_signals = load_today_signals(_date_key=_today_vn())
@@ -40,16 +40,16 @@ if today_signals is None or today_signals.empty:
 else:
     signal_date = today_signals["signal_date"].iloc[0] if "signal_date" in today_signals.columns else None
     if signal_date:
-        st.caption(f"📅 Tín hiệu được tạo ra sử dụng dữ liệu đến ngày {signal_date}")
+        st.caption(f"📅 Signal generated using data up to {signal_date}")
 
     filter_active = bool(today_signals["filter_active"].iloc[0]) if "filter_active" in today_signals.columns else False
 
     if filter_active:
-        st.warning("🛑 **Giữ tất cả tiền mặt — không mua hôm nay**\n\nBộ lọc P1 đang được kích hoạt.")
+        st.warning("🛑 **Hold all cash — do not buy today**\n\nThe P1 filter is active.")
     else:
         column_labels = {
-            "Symbol": "Mã cổ phiếu",
-            "rank": "Thứ hạng",
+            "Symbol": "Stock ticker",
+            "rank": "Rank",
         }
         display_cols = [c for c in column_labels if c in today_signals.columns]
         display_df = (
@@ -57,5 +57,5 @@ else:
             .rename(columns=column_labels)
             .reset_index(drop=True)
         )
-        display_df["Tỉ lệ vốn phân bổ"] = "5%"
+        display_df["Capital allocation"] = "5%"
         st.dataframe(display_df, use_container_width=True, hide_index=True)
