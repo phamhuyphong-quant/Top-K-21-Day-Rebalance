@@ -1,281 +1,279 @@
-# Module Documentation — VN Cross-Sectional Ranking System
+# Module Reference: VN Cross-Sectional Ranking System
 
-This document describes each module in `src/`, `config.py`, and `kaggle_kernel/kernel.py`: what it does, and how it's used. Intended for contributors, researchers, or anyone extending the pipeline.
+What each module in `src/`, `config.py` and `kaggle_kernel/kernel.py` does and how the pieces connect. For setup, results and usage examples see [README.md](README.md). This file describes the code as it is now; where code and config disagree, that is called out under **Known issues**.
 
----
+## Contents
 
-## Table of Contents
-
-1. [data_collect.py](#data_collectpy)
-2. [features.py](#featurespy)
-3. [alpha_mining.py](#alpha_miningpy)
-4. [models.py](#modelspy)
-5. [simulation.py](#simulationpy)
-6. [evaluation.py](#evaluationpy)
-7. [inference.py](#inferencepy)
-8. [deep_combiner.py](#deep_combinerpy)
-9. [app.py](#apppy)
-10. [config.py](#configpy)
-11. [kaggle_kernel/kernel.py](#kaggle_kernelkernelpy)
-12. [Data Flow Summary](#data-flow-summary)
-
----
-
-## `data_collect.py`
-
-Builds the VN stock universe and keeps `market_data.parquet` / `vnindex_data.parquet` up to date via incremental fetches from `vnstock` (VCI source).
-
-### Functions
-
-- **`clean_symbols(symbol_list)`** — Normalises a raw list of ticker symbols (dedup, strip, uppercase-style cleanup).
-- **`get_tags(fetching=False)`** — Returns the VN universe symbol list (VN30 + VNMidCap). Pass `fetching=True` to refresh from source rather than a cached list.
-- **`clean_ohlcv(df)`** — Cleans a raw OHLCV DataFrame (type coercion, column normalisation) before it's merged into the store.
-- **`_fetch_quote(symbol, start_d, end_d)`** — Fetches OHLCV history for one symbol over a date range; returns `None` on failure.
-- **`update_market_data(...)`** — Main incremental-update entry point: for each symbol in the universe, fetches only the trading days missing since the last stored date, merges, and saves. This is what `daily_update.yml` runs.
-- **`_drop_before_last_zero_volume(df)`** — Drops leading rows before a symbol's last zero-volume day (handles pre-listing / halted-trading noise).
-- **`_merge_and_dedup(existing, new_chunks)`** — Merges newly fetched chunks into the existing store, de-duplicating on `(Symbol, date)`.
-- **`fetch_indicator_data(...)`** — Fetches index-level data (e.g. VNINDEX) used for `vnindex_data.parquet`.
-- **`_save(df, file_path)`** — Writes a DataFrame to Parquet.
+1. [Data flow](#data-flow)
+2. [config.py](#configpy)
+3. [data_collect.py](#data_collectpy)
+4. [features.py](#featurespy)
+5. [alpha_mining.py](#alpha_miningpy)
+6. [models.py](#modelspy)
+7. [simulation.py](#simulationpy)
+8. [evaluation.py](#evaluationpy)
+9. [significance_test.py](#significance_testpy)
+10. [inference.py](#inferencepy)
+11. [deep_combiner.py](#deep_combinerpy)
+12. [app.py](#apppy)
+13. [kaggle_kernel/kernel.py](#kaggle_kernelkernelpy)
+14. [Known issues](#known-issues)
 
 ---
 
-## `features.py`
+## Data flow
 
-The feature-engineering and target-construction module. Every per-symbol feature function follows the same contract: **row *i* (date T) only uses data available up to and including close_{T-1}** — each function does its own internal lagging, so there's no risk of same-day leakage.
-
-### Feature Functions
-
-- **`rsi(df, window_length=14)`** — RSI computed from lagged close prices.
-- **`volume(df)`** — Rolling volume averages (`vol_5d`, `vol_1m`, `vol_3m`) and surge ratios (`volume_surge_monthly`, `volume_surge_weekly`), all from lagged volume.
-- **`return_ln(df)`** — Log returns over 1W/1M/3M/6M/1Y horizons, from lagged close.
-- **`volatility(df)`** — Annualised rolling std of daily log returns over 1W/1M/3M/6M, plus shock ratios (`volatility_shock_monthly/weekly`).
-- **`MA(df)`** — SMA/EMA at spans 9/21/50/100/200, plus `dist_SMA_*`/`dist_EMA_*` distance ratios (lagged close ÷ lagged MA).
-- **`price_structure(df)`** — `dist_52w_high` (lagged close ÷ rolling 252-day max) and `log_ret_skip1m` (skip-1-month momentum).
-- **`volume_quality(df)`** — `obv_trend` (sign-of-return-weighted volume, rolled 21 days, normalised by `vol_1m`) and `price_vol_divergence`.
-- **`turnover_ratio(df)`**, **`limit_bias(df, d=60)`** — Structural/context features (liquidity level, up/down price-limit day imbalance). Used by XGBoost only, excluded from the deep combiner's alpha pool.
-- **`amihud_illiquidity(df)`** — Amihud illiquidity proxy (log1p(|return| / volume)).
-- **`adtv(df, window=21)`** — Average daily traded value, used to build the `is_liquid` mask when `adtv_limit` is set.
-- **`robust_market_regime_pipeline_monthly(df, return_horizon=21, rolling_window=63, num_buckets=4, liquidity_mask=None)`** — Computes market-wide dispersion (MAD of cross-sectional returns) and buckets it into quartiles → **`regime_bucket_monthly`**. This is the **P2** component of the P1 entry filter (`Q1` = bottom-quartile dispersion regime).
-- **`market_breadth(liquidity_mask=None)`** — Cross-sectional breadth features (`breadth_ema21`, `narrow_breadth`, etc.).
-- Inside `build_features` (not standalone): **`market3m_ema63`** and **`market1m_ema21`** — EMA of market-wide 3-month and 1-month mean returns. `market1m_ema21 - market3m_ema63 < 0` is the **P3** (trend) component of the P1 filter.
-
-### Target / Label Functions
-
-- **`build_targets(df)`** — Computes `next_1m_ret` (`shift(-21)`) and `next_1w_ret` (`shift(-5)`) forward log returns, then **drops any row where these are NaN** — i.e. the most recent ~21 trading days per symbol, since there's no future price yet to compute a forward return from.
-- **`make_adaptive_bucket_label(df, target_col='next_1m_ret', target_bucket_size=20, min_buckets=2, risk_adjust=True, vol_col='volatility_3m')`** — Assigns each stock a `target_bucket` label per date, with bucket count chosen adaptively so each bucket has ~`target_bucket_size` stocks. Risk-adjusts by `vol_col` when `risk_adjust=True`.
-- **`make_magnitude_label(df, target_col='risk_adj_ret', scale_max=100.0, winsor_pct=0.0)`** — Min-max scales `risk_adj_ret` to `[0, scale_max]` **per date** → `target_magnitude`. This is the production model's actual training target (`eval_target_col` for `xgboost_ndcg` in `models.py`).
-- **`target_generating_ranking(df, freq='M')`** — Computes `risk_adj_ret` (forward return ÷ volatility) and buckets it into 5 per-date quintiles → `target_quintile`; also assigns `qid` (XGBRanker group id, one per date). Drops rows where a quintile can't be formed (fewer than 5 valid values that day).
-
-### `build_features(df, min_stocks_per_date=50, adtv_limit=None, generate_target=True)`
-
-The main entry point — runs every feature function above in sequence, then (if `generate_target=True`) also builds targets/labels. Two important behaviors:
-
-- **`generate_target` controls whether the most recent ~21 trading days survive.** With the default `generate_target=True`, `build_targets()` runs internally and drops any row lacking a forward return — necessary for **training** data, but it means the DataFrame's max date is always ~21 trading days behind the true latest date in the input. Pass **`generate_target=False`** to skip target construction entirely and keep the true latest date's features — this is what live **prediction** needs. `regime_bucket_monthly`, `market1m_ema21`, and `market3m_ema63` (the P1 filter inputs) are computed unconditionally either way, so they're available in both paths.
-- **`adtv_limit`** — When set, computes ADTV and applies it as a liquidity mask (`is_liquid`) for all cross-sectional (rank/mean-per-date) computations, while per-symbol rolling windows still run on the full unfiltered series (to avoid gaps breaking long lookback windows like 100/252 days). Rows failing the mask are only dropped once, right before bucket/label formation.
-
-### `apply_cross_sectional_ranking(df, feature_cols)`
-
-Utility: adds `csr_<feature>` = per-date percentile rank for each feature in `feature_cols`. Used for exploratory analysis, not part of the live pipeline.
-
----
-
-## `alpha_mining.py`
-
-WorldQuant-style alpha factor library plus genetic-programming (GP) alpha search.
-
-### Operator Functions
-
-Time-series and cross-sectional primitives used to build alpha expressions: `ts_delay`, `ts_delta`, `ts_mean`, `ts_min`, `ts_rank`, `ts_argmax` (rolling, per-symbol), and `cs_rank`, `cs_mean`, `cs_mask` (cross-sectional, per-date, liquidity-mask-aware).
-
-### `class WorldQuantAlphas`
-
-Builds a lagged OHLCV frame internally (`self.ldf`) on construction so every alpha respects the same T-1 look-ahead-safe contract as `features.py`. `generate_all()` returns a DataFrame of all implemented alphas: **#001, #002, #006, #007, #013, #016, #024, #028, #040, #101, #103, #200, #201, #202** (see inline comments in `config.candidate_features` for what each one captures — momentum, volume-price co-movement, mean-reversion, low-beta, etc.). Accepts an optional `liquidity_mask` so cross-sectional pieces only aggregate over liquid names while per-symbol rolling pieces still run on the full continuous series.
-
-### `add_and_filter_alphas(gp_model, original_df, input_features)`
-
-Takes a fitted `gplearn` `SymbolicTransformer`, generates candidate alpha expressions, and filters them (e.g. by fitness/uniqueness) before merging the survivors back into `original_df`.
-
-### `rank_ic_fitness(y_true, y_pred)`
-
-Custom `gplearn` fitness function: Spearman rank IC between a candidate GP alpha and forward returns, used to guide the genetic search toward alphas with real predictive power rather than just low error.
-
----
-
-## `models.py`
-
-Feature selection, walk-forward cross-validation, and the model zoo.
-
-### Feature Selection
-
-- **`select_features_by_icir(df, candidate_features, icir_threshold=0.02, target_col='next_1m_ret')`** — Vectorised per-date IC/IR computation (Spearman rank correlation between each feature and forward return, aggregated as mean/std → IR). Returns `(selected_features, ic_ir_map)`; only training-window data should ever be passed in, so this is inherently look-ahead-safe when called per-fold.
-- **`_compute_icir_map(df, features, target_col='next_1m_ret')`** — Same IC/IR computation without the threshold filter; used internally when `corr_prune=True` but `icir_filter=False` (still needs IC/IR values for tie-breaking).
-- **`prune_correlated_features(df, candidate_features, ic_ir_map, feature_groups=None, correlation_threshold=0.75)`** — Within each `FEATURE_GROUPS` group, for every feature pair with `|Spearman corr| >= correlation_threshold`, drops whichever has the lower `|IC IR|`. Features outside any group are never pruned against each other.
-
-### Walk-Forward Machinery
-
-- **`class Fold`** — Dataclass: `fold_number`, `train_df`, `test_df`, `test_start`, `test_end`.
-- **`generate_folds(df, initial_train_months=12, test_months=6, gap_days=21, liquidity_filter=False, adequate_adtv=2_500_000)`** — Produces the list of walk-forward `Fold`s. Model-agnostic. `gap_days` is the buffer between train cutoff and test start that prevents leakage from the ~21-day-forward target horizon.
-- **`_filter_fold_by_liquidity(...)`** — Applies an ADTV-based liquidity filter independently to each fold's train/test data (used when `generate_folds(liquidity_filter=True)`).
-- **`test_train_spliter(df, test_start, features)`** — Simpler, single-split (non-walk-forward) train/test helper used in ad-hoc research notebooks.
-
-### Model Zoo
-
-- **`predict_xgboost_ndcg(fold, features, model_params)`** — Production model: `XGBRanker` with `objective='rank:ndcg'`, trained/scored on `target_magnitude`.
-- **`predict_xgboost_mse(...)`** — XGBoost regression baseline (`reg:squarederror`) for comparison.
-- **`predict_linear(...)`** — Plain linear regression baseline.
-- **`predict_lstm_mse(...)`** — LSTM regression head, explored as an alternative to tree-based models.
-- **`predict_alphaforge(fold, alpha_pool, ...)`** — Routes to `AlphaForgeCombiner` (see `deep_combiner.py`) instead of a fold-trained ML model; takes an `alpha_pool` of WQ/GP columns instead of `(fold, features, model_params)`.
-- **`class ModelSpec`** / **`MODEL_REGISTRY`** — Declares, per model name, which column (`eval_target_col`) NDCG/scoring should treat as ground truth. `xgboost_ndcg`, `xgboost_mse`, `linear`, and `lstm_mse` all score on `target_magnitude`; `alphaforge` is handled as its own branch in `walk_forward_cv` since its signature differs.
-- **`build_mega_combiner(...)`** — Constructs an `AlphaForgeCombiner` instance with the given hyperparameters (no training — it recomputes dynamic weights at every rebalance date from rolling history).
-- **`mine_gp_factors(df, features, initial_train_end)`** — One-time GP alpha mining: fits a `SymbolicTransformer` on the initial training window, then transforms the full `df`, adding new GP-derived alpha columns. Enabled via `walk_forward_cv(use_gp=True)`.
-- **`score_and_evaluate(...)`**, **`_daily_precision_at_k(...)`**, **`_daily_topk_excess_return(...)`** — Per-fold scoring utilities: NDCG, precision@k, and buy-only-book excess return diagnostics.
-
-### `walk_forward_cv(df, features, model='xgboost_ndcg', model_params=None, initial_train_months=12, test_months=6, gap_days=21, use_gp=False, icir_filter=False, icir_threshold=0.02, icir_target_col='next_1m_ret', corr_prune=False, corr_threshold=0.75, liquidity_filter=False, adequate_adtv=2_500_000, nonskip_features=None, top_k=20)`
-
-The main orchestration function. For each fold: optionally re-runs IC/IR filtering and correlation pruning (both training-window-only, zero look-ahead), trains/scores the selected model, and records NDCG. Returns `(final_df, fold_ndcg_df)` — `final_df` is every fold's scored test set concatenated (with a `pred_score` column), `fold_ndcg_df` has one row per fold for plotting NDCG over time. This is what produced the paper's `df_predict_ndcg` (see `notebooks/NTH RESEARCH/Saving DataFrame.ipynb`, called with `icir_filter=False, corr_prune=True`).
-
----
-
-## `simulation.py`
-
-Object-oriented backtest engine — replaces an earlier monolithic `simulate_portfolio()` function. Used by the research notebooks (e.g. `Q1 and Q2.ipynb`) to backtest P1/P2/P3 and compare filter variants.
-
-- **`class DataEngine(df)`** — Wraps a DataFrame for fast, cursor-based iteration: per-symbol arrays for `get_last`/`get_upcoming` lookups, plus `date_to_rows` for whole-date slices. `reset()` rewinds the cursor for reuse across many runs without rebuilding.
-- **`class Stock`** — Tracks a single position's shares, including T+N pending (unsettled) packs via `add_pack`/`next_day`/`reduce_shares`.
-- **`class Portfolio(initial)`** — Full portfolio state: `execute_buy`/`execute_sell` (with fee/tax and T+3 settlement via `illiquid_cash`), `next_day` (marks positions to market, settles pending cash, records NAV history and per-date holdings snapshots). `skipped_orders` is an audit trail of any order that failed (insufficient cash/shares/no position).
-- **`class DataMismatch(Exception)`** — Raised when raw/predict/condition DataFrames don't cover the same set of dates.
-- **`class StepFilter(multiplier)`** — Always returns a fixed exposure multiplier. This is what implements P1's cash state: `StepFilter(0)` = zero exposure when triggered.
-- **`class RampFilter(column, floor, threshold, min_value=0.0, max_value=1.0)`** — Linear ramp between `min_value` and `max_value` based on a column's value between `floor` and `threshold` (used for P2-only partial-exposure-reduction variants, e.g. `StepFilter(0.5)`).
-- **`class FilterGroup(condition=None, transformations=None)`** — Evaluates `condition` (a string expression, e.g. `"market1m_ema21-market3m_ema63<0 and regime_bucket_monthly=='Q1'"`) against a row; if true, chains the `transformations` (Step/RampFilter) to compute a combined exposure multiplier. This is exactly how **P1** is expressed in the research notebooks.
-- **`build_data_engines(df_raw, df_predict, df_condition=None)`** — One-time setup: date-range-aligns `df_raw`/`df_predict`/`df_condition`, validates they cover matching date sets (raises `DataMismatch` otherwise), and wraps each in a `DataEngine`. Call once per dataset and reuse via `.reset()` across trials.
-- **`class OrderManager(initial, topk, df_raw, df_predict, df_condition=None, regime_filter=None)`** — Runs a full strategy simulation: `run_strategy(allocation_strategy='equal')` steps day-by-day, rebalancing every 21 days into the top-`topk` predicted names (scaled by `regime_filter`'s multiplier when set), settling trades, and recording NAV. `get_holdings(start_date, end_date)` reconstructs `{date: {symbol: shares}}` after a run.
-- **`class NullHypothesisTest(OrderManager)`** — Subclass that overrides stock selection with **fully random** top-`topk` picks, for Monte Carlo null-hypothesis significance testing against the real strategy's performance.
-
----
-
-## `evaluation.py`
-
-Plotting and performance-reporting utilities — no longer contains a training/backtest orchestration function (that moved to `simulation.py`'s `OrderManager`).
-
-### Functions
-
-- **`plot_feature_importances(model, features)`** — XGBoost gain-based feature importance bar chart.
-- **`compute_model_ic(test_df, pred_col='pred_score', ret_col='next_1m_ret')`** — Per-date Spearman IC between predictions and realised returns; reports IC Mean, IC Std, IC IR.
-- **`compute_top_quantile_win_rate(test_df, X_test=None, ranker=None, top_quantile=0.2, ret_col='next_1m_ret')`** — Win rate of top-quantile picks vs. market baseline.
-- **`plot_feature_ic(test_df, features, target_col='next_1m_ret')`** / **`plot_feature_ir(...)`** / **`plot_feature_rolling_ir(...)`** — Feature-level IC/IR diagnostics (aggregate, per-feature bar chart, and rolling monthly IR line chart).
-- **`plot_return_by_predicted_quintile(test_df, X_test=None, ranker=None)`** — Mean forward return by predicted quintile bucket.
-- **`plot_equity_curves(*results, labels=None, normalize=False, regime_colors=None, show_regime=False)`** — Overlay one or more equity curves, optionally with regime-bucket background shading.
-- **`print_performance_report(result, initial_capital=None, rf_annual=0.045, trading_days_per_year=252, verbose=True)`** — Computes and prints Total Return, CAGR, Sharpe, Sortino, Max Drawdown, and Calmar from a `Portfolio`-style NAV history.
-
----
-
-## `inference.py`
-
-Live daily signal generation.
-
-### `generate_paper_trade_signals(df, current_portfolio, features, use_mega=False, model=None, buy_n=30, trend_filter_col='dist_SMA_100', trend_filter_threshold=1.0, target_col='target_quintile', icir_filter=False, icir_threshold=0.02, icir_target_col='next_1m_ret', corr_prune=False, corr_threshold=0.75)`
-
-- Splits `df` into `train_df` (`date < latest_date` and `target_col` not null) and `inference_df` (`date == latest_date`).
-- Optionally re-runs IC/IR filtering (`icir_filter`) and correlation pruning (`corr_prune`) on `train_df` only.
-- If `model is None`, retrains an `XGBRanker` on `train_df` (single-shot, not walk-forward) and scores `inference_df` to get `live_score`; ranks all stocks by score for that date.
-- Applies a grace band: currently held symbols stay in `hold_list` as long as they rank within the top `buy_n`; new entries are drawn from the top `buy_n` candidates, optionally gated by `trend_filter_col` (set to `None` to disable — the live P1 pipeline does this, since P1's only filter is the market-level regime filter, not a per-stock trend filter).
-- Returns `(buy_list, hold_list, sell_list, not_in_universe_list, ranked_today)`, where `ranked_today` has `['Symbol', 'live_score', 'rank']`.
-
-### `get_actionable_portfolio_lists(df, current_portfolio, features, **kwargs)`
-
-Thin wrapper around `generate_paper_trade_signals` that returns a dict (`BUY`/`HOLD`/`SELL`/`NOT_IN_UNIVERSE`/`Rankings`) instead of a tuple — convenience for UI/notebook use.
-
----
-
-## `deep_combiner.py`
-
-### `_rolling_rank_ic(factor_series, ret_series, window)`
-
-Cross-sectional Spearman IC per date, rolled over `window` periods, returning both the rolling IC and rolling ICIR (IC mean ÷ IC std).
-
-### `class AlphaForgeCombiner`
-
-Implementation of AlphaForge's Algorithm 2 (arXiv:2406.18394). At each rebalance date:
-
-1. Compute rolling RankIC/ICIR per factor over `ic_window` past periods.
-2. Gate: drop factors with `|RankIC| < ic_threshold` or `|ICIR| < icir_threshold`.
-3. Keep the top `max_active_factors` survivors by `|RankIC|`.
-4. Fit a Ridge regression of those factors against recent returns → dynamic per-factor weights.
-5. Apply weights to current-date factor values → a single "Mega-Alpha" score per stock.
-
-Chosen over a nonlinear (e.g. LSTM-attention) combiner for interpretability and overfitting resistance, per the source paper. **Experimental** — found to underperform the XGBoost baseline out-of-sample; retained for research only, not used in production inference.
-
----
-
-## `app.py`
-
-A deliberately minimal Streamlit page — not a dashboard. No backtesting, feature diagnostics, or AI-commentary UI; it exists purely to surface today's live signal.
-
-### Structure
-
-1. **`_today_vn()`** — Returns today's date in Vietnam time (UTC+7) as a string, used purely as a cache key so `@st.cache_data(ttl=3600)` refreshes after VN midnight.
-2. **`load_today_signals(_date_key)`** — Fetches `today_signals.parquet` from the Hugging Face dataset (`PhongHPham/vn_cross_sectional_ranking_data_storage`) over HTTPS, optionally authenticated via `st.secrets["HF_TOKEN"]` (needed only if the dataset is private).
-3. Renders:
-   - Title ("Scientific Research") and a research-only disclaimer caption.
-   - A caption showing the data cutoff date (`signal_date`).
-   - If `filter_active` is `True` in the loaded data → a "hold cash" warning, no table.
-   - Otherwise → a table of `rank` / `Symbol` / `live_score` for today's top-20 picks.
-
-No sidebar, no portfolio input, no charts — the app trusts that `kaggle_kernel/kernel.py` already applied P1's filter and Top-K selection before publishing.
+```
+data_collect.py ─► market_data.parquet, vnindex_data.parquet
+        │
+        ▼
+features.build_features()
+  ├─ generate_target=True  ─► training frame  (target_magnitude, next_1m_ret, ...)
+  └─ generate_target=False ─► feature frame including the latest date
+        │
+   ┌────┴──────────────────────────────┐
+   ▼                                   ▼
+models.walk_forward_cv()        inference.generate_paper_trade_signals()
+   │ pred_score per test fold          │ (called from kaggle_kernel/kernel.py)
+   ▼                                   ▼
+simulation.OrderManager         today_signals.parquet ─► Hugging Face ─► app.py
+evaluation.* / significance_test.*
+```
 
 ---
 
 ## `config.py`
 
-Central configuration — no functions with side effects, just constants and one small helper.
+Constants plus one helper. Imported by `models.py`, `inference.py` and `kernel.py`.
 
-- **`final_features`** — Legacy static 20-feature list, hand-selected in an earlier research pass. No longer the operative feature set; kept for reference.
-- **`candidate_features`** — The current full feature pool (~46 features) passed into `walk_forward_cv` / `generate_paper_trade_signals`. Per-fold IC/IR filtering and correlation pruning select the active subset at runtime.
-- **`BASE_MODEL_PARAMS`** — Default XGBoost hyperparameters for the production `rank:ndcg` model (tree depth 3, 150 estimators, LambdaRank pairwise sampling, GPU (`device='cuda'`) training).
-- **`FEATURE_GROUPS`** — Dict of `{group_name: [features]}` (`returns`, `volatility`, `moving_average`, `volume`, `rsi`, `wq_features`, `price_structure`) — defines which features compete against each other during correlation pruning.
-- **`ALL_GROUP_NAMES`** — `list(FEATURE_GROUPS.keys())`.
-- **`usedSymbols`** — Fixed list of ~250 VN tickers that live inference (`kaggle_kernel/kernel.py`) filters `market_data.parquet` down to before running the pipeline.
-- **`groups_to_features(group_names)`** — Flattens a list of `FEATURE_GROUPS` keys into a single feature-name list.
+| Name | Description |
+|---|---|
+| `candidate_features` | Feature pool passed to `walk_forward_cv` and `generate_paper_trade_signals` (42 names): returns, volatility, SMA/EMA distances, volume, RSI, `dist_52w_high`, `log_ret_skip1m`, and 14 `WQ_Alpha_*` columns. Four structural features are commented out. See [Known issues](#known-issues): 7 names are not produced by `build_features`. |
+| `final_features` | Legacy hand-picked list of 20 features. Not used. |
+| `BASE_MODEL_PARAMS` | Default XGBoost parameters: `rank:ndcg`, `device='cuda'`, `tree_method='hist'`, 150 trees, depth 3, `min_child_weight=5`, `learning_rate=0.03`, `subsample=0.7`, `colsample_bytree=0.6`, `reg_lambda=5`, `reg_alpha=1`, `lambdarank_pair_method='topk'`, `lambdarank_num_pair_per_sample=20`, `ndcg_exp_gain=False`, `random_state=42`. |
+| `FEATURE_GROUPS` | `{group: [features]}` for `returns`, `volatility`, `moving_average`, `volume`, `rsi`, `wq_features`, `price_structure`. Correlation pruning only compares features **within** a group. |
+| `ALL_GROUP_NAMES` | `list(FEATURE_GROUPS)`. |
+| `usedSymbols` | The 280 tickers that `kernel.py` filters the market data down to. |
+| `groups_to_features(group_names)` | Flattens group names into one feature list. |
+
+---
+
+## `data_collect.py`
+
+Builds the ticker universe and keeps `market_data.parquet` and `vnindex_data.parquet` current through `vnstock`. Running the file as a script (`python src/data_collect.py`) updates both files from `2016-01-01`; this is what `daily_update.yml` runs. It also writes `data_collect.log`.
+
+- **`clean_symbols(symbol_list)`**: Strips, de-duplicates and sorts ticker strings, dropping nulls.
+- **`get_tags(fetching=False)`**: Returns a hard-coded list of 300 tickers. With `fetching=True` returns the live `VNALL` index members from `vnstock.Reference`.
+- **`clean_ohlcv(df)`**: Normalises a raw OHLCV frame. Rows that break an OHLC rule are repaired by carrying the whole candle forward; volume is left alone and no rows are dropped.
+- **`_fetch_quote(symbol, start_d, end_d)`**: Daily OHLCV for one symbol. Returns `None` on failure.
+- **`update_market_data(file_path, symbols, start_date="2016-01-01", batch_size=1, base_sleep=7, filter_symbols=True)`**: Main entry point. Works out the last completed trading day (today counts after 14:45 Vietnam time), skips symbols whose stored data already reaches it, and for every other symbol re-fetches from `start_date` and merges by `(date, Symbol)`, new rows winning. Saves after each batch, sleeps `base_sleep` seconds per symbol, and retries once when the API reports a rate limit. `filter_symbols=True` purges stored symbols that are no longer in `symbols`.
+- **`_drop_before_last_zero_volume(df)`**: For each symbol, drops everything up to and including its most recent zero-volume day (pre-listing and halt noise).
+- **`_merge_and_dedup(existing, new_chunks)`**: Concatenates and de-duplicates on `(date, Symbol)`.
+- **`fetch_indicator_data(ind_symbol, start_date, file_path)`**: Index data (for example `VNINDEX`) to Parquet.
+- **`_save(df, file_path)`**: Writes Parquet.
+
+---
+
+## `features.py`
+
+Feature engineering, targets and market-regime columns. Contract for every per-symbol function: **row *i* (date *T*) uses data only up to the close of *T-1***. Each function lags its own inputs.
+
+### Feature functions
+
+| Function | Adds |
+|---|---|
+| `return_ln(df)` | `log_ret_1w/1m/3m/6m/1y` |
+| `volatility(df)` | `volatility_1w/1m/3m/6m` (annualised) and `volatility_shock_monthly/weekly` |
+| `MA(df)` | SMA/EMA at 9/21/50/100/200 and `dist_SMA_*`, `dist_EMA_*` |
+| `volume(df)` | `vol_5d/1m/3m`, `volume_surge_weekly/monthly` |
+| `rsi(df, window_length=14)` | `RSI_14` |
+| `volume_quality(df)` | `obv_trend`, `price_vol_divergence` |
+| `price_structure(df)` | `dist_52w_high`, `log_ret_skip1m`. **Currently not called** by `build_features` (see Known issues) |
+| `turnover_ratio(df)`, `limit_bias(df, d=60)`, `amihud_illiquidity(df)` | Structural features. Computed, but their candidate entries in `config.py` are commented out |
+| `adtv(df, window=21)` | 21-day average daily traded value, used for the liquidity mask |
+| `market_breadth(df, liquidity_mask=None)` | Breadth columns such as `breadth_ema21` |
+| `robust_market_regime_pipeline_monthly(df, return_horizon=21, rolling_window=63, num_buckets=4, liquidity_mask=None)` | The **P2** input. Takes each stock's lagged 21-day return, computes the cross-sectional MAD per date over liquid rows, smooths it with a 63-day rolling mean, converts it to a point-in-time percentile over a trailing 252-day window, and cuts it into quartiles. Outputs `regime_disp_raw_monthly`, `regime_percentile_monthly`, `regime_bucket_monthly` (`Q1` lowest dispersion to `Q4` highest) |
+
+### Target and label functions
+
+- **`build_targets(df)`**: `next_1m_ret = log(close[t+21]/close[t])` and `next_1w_ret` (5-day), then **drops rows where either is NaN**, i.e. the last ~21 sessions per symbol.
+- **`make_magnitude_label(df, target_col="risk_adj_ret", scale_max=100, winsor_pct=0.0)`**: Per-date min-max scaling to `[0, 100]`, producing `target_magnitude`. This is the training and evaluation label for every model in `MODEL_REGISTRY`.
+- **`make_adaptive_bucket_label(...)`**: Per-date bucket labels (`target_bucket`) with a bucket count chosen to give ~20 stocks each. **Not called** by `build_features` any more.
+- **`target_generating_ranking(df, freq="M")`**: Builds `risk_adj_ret`, quintile labels `target_quintile`, and `qid` (one id per date, required by `XGBRanker`). **Not called** by `build_features`; the `alphaforge` model path scores on `target_quintile`, so it needs this run first.
+- **`apply_cross_sectional_ranking(df, feature_cols)`**: Adds per-date percentile-rank columns `csr_<feature>`. Exploratory only.
+
+### `build_features(df, min_stocks_per_date=50, adtv_limit=None, generate_target=True)`
+
+Order of work: returns, volatility, MAs, volume, RSI, volume quality, structural features; then (if `generate_target`) `build_targets`, `risk_adj_ret = next_1m_ret / volatility_3m`, `make_magnitude_label`; then ADTV and the `is_liquid` mask; WQ alphas; the regime pipeline; `market3m_ema63` and `market1m_ema21` (the **P3** inputs: EMA span 63 of the liquid-universe mean `log_ret_3m`, EMA span 21 of the mean `log_ret_1m`); breadth. Finally it drops illiquid rows (once), replaces ±inf with NaN, drops rows with any NaN feature, and removes dates with fewer than `min_stocks_per_date` symbols.
+
+- `generate_target=False` skips target construction, so the latest date survives. The regime and trend columns are produced either way.
+- With `adtv_limit` set, per-symbol rolling windows still run on the full series; only cross-sectional statistics use the mask.
+
+---
+
+## `alpha_mining.py`
+
+WorldQuant-style alphas and gplearn helpers.
+
+- **Operators:** `to_series`, `ts_delay`, `ts_delta`, `ts_mean`, `ts_min`, `ts_rank`, `ts_argmax` (per-symbol, rolling) and `cs_mask`, `cs_rank`, `cs_mean` (per-date, liquidity-mask aware).
+- **`class WorldQuantAlphas(df, liquidity_mask=None)`**: Builds a lagged OHLCV copy so every alpha respects the T-1 rule. `generate_all()` currently returns `WQ_Alpha_002, 006, 007, 013, 016, 024, 028, 040, 102, 103, 104, 105`. Methods `get_alpha_201` and `get_alpha_202` exist, but their calls in `generate_all()` are commented out.
+- **`add_and_filter_alphas(gp_model, original_df, input_features)`**: Takes a fitted `gplearn` `SymbolicTransformer`, generates candidate expressions, filters them and merges the survivors into `original_df`.
+- **`rank_ic_fitness(y_true, y_pred)`**: Custom gplearn fitness, the Spearman rank IC between a candidate and forward returns.
+
+---
+
+## `models.py`
+
+Feature selection, walk-forward machinery and the model zoo.
+
+### Feature selection (training window only)
+
+- **`select_features_by_icir(df, candidate_features, icir_threshold=0.02, target_col="next_1m_ret")`**: Vectorised per-date Spearman IC for each feature, aggregated to IR = mean/std. Returns `(selected, ic_ir_map)` keeping features with |IC IR| above the threshold.
+- **`_compute_icir_map(df, features, target_col)`**: Same computation without thresholding. Used for tie-breaking when `corr_prune=True` and `icir_filter=False`.
+- **`prune_correlated_features(df, candidate_features, ic_ir_map, feature_groups=None, correlation_threshold=0.75)`**: Within each `FEATURE_GROUPS` group, for any pair with |Spearman| at or above the threshold, drops the one with the lower |IC IR|. Features in different groups never compete.
+- **`test_train_spliter(df, test_start, features)`**: Single split helper for ad-hoc work.
+
+### Walk-forward windows
+
+All lengths are counts of **unique trading dates** in the data.
+
+- **`class Fold`**: dataclass with `fold_number`, `train_df`, `test_df`, `test_start`, `test_end`.
+- **`class WindowPolicy(initial_train_dates, gap_dates=0)`**: abstract base. `iter_slices(unique_dates)` yields `(train_dates, test_dates)` pairs. Raises if `gap_dates >= initial_train_dates`.
+- **`class RollingWindow(initial_train_dates, train_percent, gap_dates=0)`**: fixed-length train window. Test length is `round((initial_train_dates - gap_dates) × (1 - train_percent) / train_percent)`, and the window advances by exactly the test length, so test blocks tile the timeline with no overlap and no holes. The last incomplete fold is dropped.
+- **`class ExpandingWindow(initial_train_dates, test_len_dates=None, train_percent=None, gap_dates=0)`**: train starts at date 0 and grows by one test block per fold. Test length is fixed for the whole run, given directly or derived once from `train_percent`.
+- **`generate_folds(df, window_policy, liquidity_filter=False, adequate_adtv=2_500_000)`**: Turns a policy's date slices into `Fold` objects and assigns a per-date `qid` to each train and test frame. With `liquidity_filter=True` each fold is filtered separately by `_filter_fold_by_liquidity`.
+- **`_filter_fold_by_liquidity(...)`**: ADTV filter applied per fold, using only history available at each date.
+- **`_test_len_from_ratio(eff_train_dates, train_percent)`**: shared test-length formula.
+
+### Model zoo
+
+Each `predict_*` takes a `Fold` and returns the test frame with a `pred_score` column.
+
+- **`predict_xgboost_ndcg(fold, features, model_params)`**: **Production.** `XGBRanker` (`rank:ndcg`) fit on `target_magnitude` with `qid` groups. Defaults to `BASE_MODEL_PARAMS`.
+- **`predict_xgboost_mse(...)`**: `XGBRegressor` with `reg:squarederror`, same label.
+- **`predict_linear(...)`**: `StandardScaler` plus `LassoCV(cv=5)`, same label. (Called "linear" in the registry and "LassoCV" in the notebook.)
+- **`predict_lstm_mse(...)`**: Small PyTorch LSTM over per-symbol windows, MSE loss. `model_params` may set `seq_len` (10), `hidden_size` (32), `num_layers` (1), `dropout` (0), `epochs` (20), `batch_size` (256), `lr` (1e-3), `device`. Symbols without enough history get the median training prediction.
+- **`predict_alphaforge(fold, alpha_pool, combiner_kwargs=None)`**: Runs `AlphaForgeCombiner` date by date; the Mega-Alpha is the score. Takes an alpha pool instead of `(features, model_params)`, so it has its own branch in `walk_forward_cv`.
+- **`class ModelSpec(name, predict_fn, eval_target_col)`** and **`MODEL_REGISTRY`**: `xgboost_ndcg`, `xgboost_mse`, `linear`, `lstm_mse`, all scored on `target_magnitude`. (The comment above the registry still talks about `target_bucket`/`target_quintile`; ignore it.)
+- **`build_mega_combiner(...)`**: Constructs an `AlphaForgeCombiner` with given hyperparameters.
+- **`mine_gp_factors(df, features, initial_train_end)`**: Fits a `SymbolicTransformer` on the initial window and adds GP columns to the full frame (`walk_forward_cv(use_gp=True)`).
+- **`score_and_evaluate(...)`**, **`_daily_precision_at_k(...)`**, **`_daily_topk_excess_return(...)`**: Per-fold NDCG, precision@k and top-k excess return against the universe.
+
+### `walk_forward_cv(df, features, model="xgboost_ndcg", model_params=None, initial_train_dates=252, train_percent=0.7, gap_dates=21, window_mode="expanding", use_gp=False, icir_filter=False, icir_threshold=0.02, icir_target_col="next_1m_ret", corr_prune=False, corr_threshold=0.75, liquidity_filter=False, adequate_adtv=2_500_000, nonskip_features=None, top_k=20)`
+
+Per fold: optional IC/IR filter, then optional correlation pruning (both on `fold.train_df` only), append any `nonskip_features`, fit and score the chosen model, record NDCG. `window_mode` is `"expanding"` or `"rolling"`. Returns `(final_df, fold_ndcg_df)`: every fold's scored test rows with `pred_score`, and one row per fold (`fold_index`, `test_start`, `test_end`, `ndcg`). It also prints overall NDCG, precision@k and top-k excess return.
+
+Example rolling setup: `window_mode="rolling", initial_train_dates=756, train_percent=0.8, gap_dates=21` gives 735 training dates, a 21-date gap and 184-date test blocks.
+
+---
+
+## `simulation.py`
+
+Day-by-day backtest engine. Prices come from `df_raw`, scores from `df_predict`, and an optional third frame feeds the entry filter.
+
+- **`class DataEngine(df)`**: Cursor-based access to a frame: `get_today`, `get_date`, `get_last(symbol)`, `get_upcoming(symbol)`, `update_idx`, `is_finished`, `reset`. `get_last` only returns data up to the cursor, which prevents look-ahead.
+- **`class pack`** and **`class Stock`**: Share lots that are still settling. `add_pack`, `next_day`, `reduce_shares`.
+- **`class Portfolio(initial)`**: `fee = 0.1%` per side, `tax = 0.1%` on sells, settlement lag `T = 3`. `execute_buy` and `execute_sell` (sale proceeds go to a pending-cash list), `next_day` (settles cash, marks to market, appends to `history` and `holdings_history`). Failed orders are logged in `skipped_orders`.
+- **`class DataMismatch`**: raised when the frames do not cover the same dates.
+- **Filters:**
+  - `StepFilter(multiplier)`: constant multiplier.
+  - `RampFilter(column, floor, threshold, min_value=0.0, max_value=1)`: linear ramp on a column value; NaN or missing column means no effect.
+  - `FilterGroup(condition=None, transformations=None)`: evaluates `condition` (a pandas-style expression string, run with `eval`, so use trusted strings only) on a row. If false the multiplier is 1.0; if true it is the product of the transformations. **P1** is `FilterGroup("market1m_ema21-market3m_ema63<0 and regime_bucket_monthly=='Q1'", [StepFilter(0)])`.
+- **`build_data_engines(df_raw, df_predict, df_condition=None)`**: Trims everything to the prediction date range, checks that the date sets are identical (else `DataMismatch`) and returns three `DataEngine`s. Build once, reuse via `reset()`.
+- **`class OrderManager(initial, topk, df_raw, df_predict, df_condition=None, regime_filter=None)`**: `run_strategy(allocation_strategy="equal" | "rank_weighted")` loops over days; on every 21st day it selects the top-`topk` by `pred_score` and sells names that left the set (or trims overweight ones); three days later it buys the shortfall to target weight in 100-share lots. The filter multiplier scales that buy shortfall on the buy day, so a multiplier of 0 blocks new purchases but does not liquidate existing holdings. `get_holdings(start, end)` and `get_symbols_held(start, end)` report positions after a run. No slippage is modelled.
+- **`class NullHypothesisTest(OrderManager)`**: same engine, but picks `topk` stocks uniformly at random each rebalance, for Monte Carlo baselines.
+
+---
+
+## `evaluation.py`
+
+Plots and performance statistics. No orchestration lives here.
+
+- **`plot_feature_importances(model, features)`**: XGBoost gain importances.
+- **`compute_model_ic(test_df, pred_col="pred_score", ret_col="next_1m_ret")`**: Per-date Spearman IC; reports mean, std and IR.
+- **`compute_top_quantile_win_rate(test_df, X_test=None, ranker=None, top_quantile=0.2, ret_col="next_1m_ret")`**: Win rate of top-quantile picks against the market.
+- **`plot_feature_ic`**, **`plot_feature_ir`**, **`plot_feature_rolling_ir(test_df, feature, target_col, window=6)`**: Feature diagnostics.
+- **`plot_return_by_predicted_quintile(test_df, X_test=None, ranker=None)`**: Mean forward return per predicted quintile.
+- **`plot_equity_curves(*results, labels=None, normalize=False, regime_colors=None, show_regime=False)`**: Overlays equity curves, optionally shading regime buckets.
+- **`print_performance_report(result, initial_capital=None, rf_annual=0.045, trading_days_per_year=252, verbose=True)`**: Returns (and optionally prints) total return, CAGR, Sharpe, Sortino, max drawdown and Calmar from a NAV history.
+
+---
+
+## `significance_test.py`
+
+Statistical comparison of ranking models and portfolios. Target values are 21-day forward returns, so adjacent days share 20 of 21 days and daily differences are strongly autocorrelated; every test therefore resamples **blocks** of consecutive days (default 21). Differences are in volatility-adjusted `target_magnitude` units, not percent.
+
+- **Daily series:** `topk_daily_avg(df, k=20, ...)` (mean target of the top-k by `pred_score` each day), `universe_daily_avg(df, ...)`, `compute_delta_base_vs_model(...)` (base minus other, positive means base is better), `compute_delta_vs_universe(...)`.
+- **Core tests:** `paired_permutation_test(delta, n_iter, alternative, block, seed)` (block sign-flip) and `paired_bootstrap_ci(delta, n_boot, ci, block, seed)` (moving-block bootstrap).
+- **`run_comparison(name, delta, block=None, step=None, offset=0, ...)`**: p-value at the chosen block (`p_value`), the naive block=1 p-value (`p_naive`) and a 95% CI. `step=21` keeps every 21st date for a non-overlapping cross-check.
+- **`add_holm_correction(results, alpha=0.05)`**: Holm-adjusted p-values within one family of tests.
+- **Families:** `compare_base_vs_models(dfs, base_model="ndcg", ...)` and `compare_models_vs_universe(dfs, ...)`.
+- **Diagnostics:** `autocorr_report`, `outlier_report`, `suggest_block`, `plot_autocorr`, `offset_sensitivity(dfs, ..., step=21)`.
+- **Output:** `print_table`, `plot_base_vs_models`, `plot_vs_universe`.
+- **`run_analysis(dfs, base_model="ndcg", mode="both" | "base" | "universe", k=20, block=None, step=None, offset=0, save_dir=None, show=True)`**: One-call entry point returning the result tables.
+- **Sharpe difference:** `sharpe_ratio(returns, ...)` and `sharpe_diff_block_bootstrap(history_1, history_2, block=21, n_boot=10000, rf_annual=0.0, date_col="date", value_col="total_value", seed=42)`: paired moving-block bootstrap on two NAV histories, same blocks for both series. Note `rf_annual` defaults to 0 here, while `print_performance_report` uses 4.5%.
+
+The notebook `notebooks/Significance Test for Ranking Models.ipynb` shows the intended workflow (autocorrelation check first, then tests).
+
+---
+
+## `inference.py`
+
+### `generate_paper_trade_signals(df, current_portfolio, features, use_mega=False, model=None, buy_n=30, trend_filter_col="dist_SMA_100", trend_filter_threshold=1.0, target_col="target_quintile", icir_filter=False, icir_threshold=0.02, icir_target_col="next_1m_ret", corr_prune=False, corr_threshold=0.75)`
+
+1. `latest_date = df["date"].max()`. Training rows are the `date < latest_date` rows from the most recent **735** trading dates that have a non-null `target_col`; inference rows are those on `latest_date`.
+2. Optional IC/IR filter and correlation pruning on the training rows only.
+3. If `model is None`, fits `xgb.XGBRanker(**BASE_MODEL_PARAMS)` on `target_col` with the `qid` column (so `df` needs `qid`) and scores the inference rows into `live_score`. `use_mega=True` raises `NotImplementedError`.
+4. Ranks today's stocks (1 = best). Held symbols stay in `hold_list` while ranked within `buy_n`, otherwise go to `sell_list`; held symbols absent from today's data go to `not_in_universe_list`. New buys come from the top `buy_n`, optionally gated by `trend_filter_col > trend_filter_threshold` (pass `trend_filter_col=None` to disable, as production does).
+
+Returns `(buy_list, hold_list, sell_list, not_in_universe_list, ranked_today)`; `ranked_today` has `Symbol`, `live_score`, `rank`. Note the defaults (`buy_n=30`, trend filter on, `target_quintile`) differ from what production passes (`buy_n=20`, no trend filter, `target_magnitude`).
+
+### `get_actionable_portfolio_lists(df, current_portfolio, features, **kwargs)`
+
+Wrapper returning a dict with `BUY`, `HOLD`, `SELL`, `NOT_IN_UNIVERSE`, `Rankings`.
+
+---
+
+## `deep_combiner.py` (experimental)
+
+- **`_rolling_rank_ic(factor_series, ret_series, window)`**: Rolling cross-sectional Spearman IC and ICIR.
+- **`class AlphaForgeCombiner(ic_window=40, ic_threshold=0.02, icir_threshold=0.2, max_active_factors=13, ridge_alpha=1.0)`**: Implements Algorithm 2 of AlphaForge (arXiv:2406.18394). `fit_and_predict(hist_df, current_df, alpha_cols, ret_col="next_1m_ret")` computes rolling RankIC/ICIR per factor over recent history, keeps factors above the thresholds, takes the top `max_active_factors` by |RankIC|, fits Ridge to get weights, and returns a combined "Mega-Alpha" score for the current date. `report()` prints the active factors and weights. Reported in the project as underperforming the XGBoost ranker; not used in production.
+
+---
+
+## `app.py`
+
+A deliberately small Streamlit page.
+
+- **`_today_vn()`**: Today's date in Vietnam time, used as a cache key so the cache refreshes after local midnight.
+- **`load_today_signals(_date_key)`**: Downloads `today_signals.parquet` from the Hugging Face dataset `PhongHPham/vn_cross_sectional_ranking_data_storage` (1-hour `st.cache_data` TTL), using `st.secrets["HF_TOKEN"]` if present. Shows a warning and returns `None` on failure.
+- **Page:** Vietnamese title (the paper's title) and a research-only disclaimer; a caption with the data cutoff date (`signal_date`); then either a "hold all cash, P1 active" warning when `filter_active` is true, or a table of rank and symbol with a fixed "5%" allocation per stock.
+
+It performs no model work; it trusts `kernel.py` to have applied P1 and Top-K already.
 
 ---
 
 ## `kaggle_kernel/kernel.py`
 
-Not part of `src/` — this is the standalone script pushed to Kaggle daily by `.github/workflows/precompute_model.yml`. It's the live production entry point that ties `features.py` and `inference.py` together and publishes the result.
+The production entry point, pushed to Kaggle by `precompute_model.yml` (`kernel-metadata.json`: id `phmhuyphongp/precompute-vn`, script kernel, GPU and internet on, private). `GH_PAT` and `HF_TOKEN` are injected by the workflow with `sed`, then restored.
 
-Steps:
+1. Clone `main` (source) and `data-storage` (data) with `GH_PAT`; copy `market_data.parquet` into `repo/data/`; `pip install -r requirements-dev.txt`.
+2. Load the data, keep `config.usedSymbols`, drop 2018-01-23 and 2018-01-24 (days where most stocks are missing).
+3. Build features twice with `adtv_limit=2_500_000`: with targets (training) and with `generate_target=False` (keeps today).
+4. Evaluate P1 on the latest date from the second frame: `regime_bucket_monthly == "Q1"` and `market1m_ema21 - market3m_ema63 < 0`.
+   - **Active:** write a one-row cash record (`filter_active=True`, null `rank`/`Symbol`/`live_score`).
+   - **Inactive:** sort the training frame by date and assign `qid`, append today's rows with `target_magnitude = NaN`, call `generate_paper_trade_signals(buy_n=20, trend_filter_col=None, target_col="target_magnitude", icir_filter=False, corr_prune=True)`, keep the top 20.
+5. Save `today_signals.parquet` (`signal_date`, `filter_active`, and `rank`/`Symbol`/`live_score` when not in cash) and upload it to the Hugging Face dataset that `app.py` reads.
 
-1. **Clone** the repo's source branch (`main` or a feature branch, whichever `precompute_model.yml` currently checks out) for `src/`/`config.py`, and the `data-storage` branch for `market_data.parquet`.
-2. **Load & filter** `market_data.parquet` to `config.usedSymbols`, coerce dates, drop a couple of known bad dates (`2018-01-23/24`).
-3. **Build features twice**:
-   - `df = build_features(df_raw, adtv_limit=2_500_000)` — target-bearing, used for **training** (tail-trimmed by ~21 trading days).
-   - `df_raw = build_features(df_raw, adtv_limit=2_500_000, generate_target=False)` — feature-only, retains the **true latest date**.
-4. **Evaluate the P1 filter** on the true latest date (from step 3's `df_raw`): `regime_bucket_monthly == 'Q1'` AND `market1m_ema21 - market3m_ema63 < 0`.
-   - **If active** → publishes a one-row "cash" record (`filter_active=True`, no stock rows).
-   - **If inactive** → assigns `qid` to `df` (required by `XGBRanker`, normally added by `target_generating_ranking`, which this pipeline doesn't call), appends the true-latest-date row(s) from `df_raw` with `target_magnitude` set to `NaN`, and calls `generate_paper_trade_signals(..., buy_n=20, trend_filter_col=None, target_col='target_magnitude', icir_filter=False, corr_prune=True)` on the combined frame. Because `generate_paper_trade_signals` internally splits on `date == latest_date` for inference and `target_col.notna()` for training, this trains on `df`'s full labeled history and predicts on today, in one call.
-5. **Publishes** `today_signals.parquet` (columns: `signal_date`, `filter_active`, and — when not in cash — `rank`/`Symbol`/`live_score` for the top 20) to the `PhongHPham/vn_cross_sectional_ranking_data_storage` Hugging Face dataset, which `src/app.py` reads.
+Because `generate_paper_trade_signals` trains on the last 735 labelled dates, the model never sees the ~21 most recent sessions (their targets do not exist yet).
 
 ---
 
-## Data Flow Summary
+## Known issues
 
-```
-data_collect.py ──► market_data.parquet, vnindex_data.parquet   (daily_update.yml)
-                                │
-                                ▼
-                    features.py: build_features()
-                    ├── generate_target=True  → training frame (tail-trimmed ~21 trading days)
-                    └── generate_target=False → true-latest-date feature frame
-                                │
-                    ┌───────────┴────────────┐
-                    ▼                         ▼
-        models.py: walk_forward_cv()   kernel.py: append latest row,
-        (research / offline backtests   call inference.generate_paper_trade_signals()
-         via simulation.py OrderManager  (single-shot retrain + P1 filter check)
-         + FilterGroup/StepFilter)                │
-                    │                              ▼
-                    ▼                    today_signals.parquet → Hugging Face
-        evaluation.py: plots/reports                │
-        (notebooks/NTH RESEARCH/*.ipynb)             ▼
-                                            app.py (Streamlit, reads HF dataset)
-```
+Also listed in the [README](README.md#known-issues).
+
+1. **Feature mismatch.** `config.candidate_features` includes `dist_52w_high`, `log_ret_skip1m`, `WQ_Alpha_001`, `WQ_Alpha_101`, `WQ_Alpha_200`, `WQ_Alpha_201` and `WQ_Alpha_202`, which `build_features` does not produce (verified on synthetic data). `WQ_Alpha_102`, `104` and `105` are produced but not listed. Selecting columns from the `build_features` output with `candidate_features` raises `KeyError`. Fix by re-enabling `price_structure(df)` and the missing alphas, or by updating `candidate_features` and `FEATURE_GROUPS`. The comments in `config.py` for alpha 103 (monthly acceleration) and in `alpha_mining.py` (103 is 12-1m momentum, 102 is acceleration) also disagree.
+2. **Notebooks use the previous walk-forward API** (`initial_train_months`, `test_months`), which `walk_forward_cv` and `generate_folds` no longer accept.
+3. **`daily_update.yml` has no schedule**, only `workflow_dispatch`.
+4. **Different Sharpe conventions:** `print_performance_report` uses `rf_annual=0.045`; `sharpe_diff_block_bootstrap` defaults to 0.
