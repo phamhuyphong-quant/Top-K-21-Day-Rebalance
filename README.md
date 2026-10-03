@@ -8,6 +8,8 @@ A modular Python toolkit for building and backtesting **Top-K cross-sectional ra
 
 > **Disclaimer.** For research and education only, not financial advice. Backtests are historical simulations and do not guarantee future results.
 
+> **Public code snapshot.** This repository contains the code only. The raw market data and the live daily pipeline (data collection, retraining, signal generation) run from a private companion repository. GitHub Actions here are disabled, and the notebooks read datasets hosted on Kaggle that are not included. To run the toolkit, collect your own data with `src/data_collect.py` (step 1 below).
+
 ## What it does
 
 ```
@@ -30,8 +32,8 @@ Every feature at date *T* uses only data up to the close of *T-1*, and all featu
 ## Installation
 
 ```bash
-git clone https://github.com/phamhuyphong-quant/cross_sectional_rank_vn.git
-cd cross_sectional_rank_vn
+git clone https://github.com/phamhuyphong-quant/Top-K-21-Day-Rebalance.git
+cd Top-K-21-Day-Rebalance
 pip install -r requirements-dev.txt     # full toolkit (torch, gplearn, statsmodels, ...)
 pip install -r requirements.txt         # Streamlit page only
 ```
@@ -49,7 +51,7 @@ update_market_data("market_data.parquet", get_tags(), start_date="2016-01-01")
 fetch_indicator_data("VNINDEX", "2016-01-01", "vnindex_data.parquet")
 ```
 
-`get_tags()` returns a built-in ticker list; `get_tags(fetching=True)` pulls the live `VNALL` members. Up-to-date symbols are skipped, others are re-fetched and merged by `(date, Symbol)`. `clean_ohlcv` repairs rows that break OHLC rules.
+This builds the dataset the rest of the pipeline expects (columns `Symbol`, `date`, `open`, `high`, `low`, `close`, `volume`). It is not included in this repository, and a full download is slow because the script pauses between symbols to respect `vnstock` rate limits. `get_tags()` returns a built-in ticker list; `get_tags(fetching=True)` pulls the live `VNALL` members. Up-to-date symbols are skipped, others are re-fetched and merged by `(date, Symbol)`. `clean_ohlcv` repairs rows that break OHLC rules.
 
 ### 2. Features and targets: `src/features.py`
 
@@ -153,7 +155,7 @@ Retrains on the latest 735 labelled trading dates and ranks today's stocks. `kag
 
 ## Configuration: `config.py`
 
-`candidate_features`, `FEATURE_GROUPS` (pruning groups), `BASE_MODEL_PARAMS` (XGBoost LambdaRank defaults), `usedSymbols` (universe for live runs), `groups_to_features()`.
+`candidate_features`, `FEATURE_GROUPS` (pruning groups), `BASE_MODEL_PARAMS` (XGBoost LambdaRank defaults), `usedSymbols` (the 280-symbol universe used by the live run), `groups_to_features()`.
 
 ## Repository layout
 
@@ -167,21 +169,17 @@ notebooks/      significance-test notebook; research notebooks and paper in "NTH
 MODULES.md      per-module function reference
 ```
 
-## Automation
+## Automation (disabled in this repo)
 
-| Workflow | Trigger | Purpose |
+The workflows are kept for documentation. They reference a `data-storage` branch and secrets that exist only in the private companion repo, and `kaggle_kernel/kernel.py` clones that private repo, so none of this runs from the public snapshot.
+
+| Workflow | Trigger | What it does in the private repo |
 |---|---|---|
-| `daily_update.yml` | Manual | Update data on the `data-storage` branch, then trigger the next workflow |
-| `precompute_model.yml` | Manual or after data update | Push `kernel.py` to Kaggle and wait for it to finish |
-| `keep_alive.yml` | Every 6 hours | Keep the Streamlit app awake |
+| `daily_update.yml` | Manual | Updates market data on the `data-storage` branch, then triggers the next workflow |
+| `precompute_model.yml` | Manual or after data update | Pushes `kernel.py` to Kaggle and waits for it to finish |
+| `keep_alive.yml` | Every 6 hours | Keeps the Streamlit app awake |
 
-Secrets: `KAGGLE_USERNAME`, `KAGGLE_KEY`, `GH_PAT`, `HF_TOKEN`.
-
-## Known issues
-
-1. `config.candidate_features` lists `dist_52w_high`, `log_ret_skip1m`, `WQ_Alpha_001`, `101`, `200`, `201`, `202`, which `build_features()` does not currently produce (`price_structure()` is commented out; those alphas are not emitted). Selecting `candidate_features` from its output raises `KeyError` until they are reconciled.
-2. The notebooks in `notebooks/NTH RESEARCH/` use the old `initial_train_months` / `test_months` arguments, which no longer exist.
-3. `daily_update.yml` has no `schedule:` trigger.
+Secrets used there: `KAGGLE_USERNAME`, `KAGGLE_KEY`, `GH_PAT`, `HF_TOKEN`.
 
 ## Research background
 
