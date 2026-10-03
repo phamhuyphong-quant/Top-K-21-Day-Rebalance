@@ -1,27 +1,3 @@
-final_features= [
-    'dist_52w_high',
-    'log_ret_skip1m',
-    'WQ_Alpha_024',
-    'log_ret_6m',
-    'RSI_14',
-    'log_ret_3m',
-    'price_vol_divergence',
-    'dist_SMA_50',
-    'dist_SMA_21',
-    'log_ret_1w',
-    'log_ret_1m',
-    'WQ_Alpha_028',
-    'volume_surge_weekly',
-    'log_ret_1y',
-    'volatility_shock_monthly',
-    'volume_surge_monthly',
-    'volatility_shock_weekly',
-    'volatility_1w',
-    'volatility_1m',
-    'volatility_6m'
-]
-
-
 candidate_features = [
     # --- Return features ---
     "log_ret_1w",
@@ -50,11 +26,11 @@ candidate_features = [
 
     # --- Momentum / technical ---
     "RSI_14",
-    "dist_52w_high",
-    "log_ret_skip1m",
+    #"dist_52w_high",
+    #"log_ret_skip1m",
 
     # --- WQ Alpha signals (return-predicting, eligible for deep combiner) ---
-    "WQ_Alpha_001",   # 12-1m momentum
+    
     "WQ_Alpha_002",   # Volume momentum vs intraday return rank correlation
     "WQ_Alpha_006",   # -corr(open, volume, 10)
     "WQ_Alpha_007",   # Conditional momentum. Only fires on high-volume days.
@@ -63,11 +39,13 @@ candidate_features = [
     "WQ_Alpha_024",   # conditional 100d mean-reversion
     "WQ_Alpha_028",   # corr(adv20, low, 5) + midprice - close
     "WQ_Alpha_040",   # Penalizes high-volatility stocks that also have high-volume correlation (avoids blow-off tops).
-    "WQ_Alpha_101",   # BAB: negative rolling beta to equal-weighted market
-    "WQ_Alpha_103",   # monthly price acceleration (21d second derivative)
-    "WQ_Alpha_200",   # Value proxy: distance from 52w high (far below = cheap)
-    "WQ_Alpha_201",   # Volume trend confirmation: price momentum × volume momentum
-    "WQ_Alpha_202",   # Residual momentum: 12-1m excess return vs equal-weighted market
+    
+    "WQ_Alpha_102",   # monthly price acceleration (21d second derivative)
+    "WQ_Alpha_103",   # Value proxy: distance from 52w high (far below = cheap)
+    "WQ_Alpha_104",   # BAB: negative rolling beta to equal-weighted market
+    "WQ_Alpha_105",   # 12-1m momentum
+    #"WQ_Alpha_201",   # Volume trend confirmation: price momentum × volume momentum
+    #"WQ_Alpha_202",   # Residual momentum: 12-1m excess return vs equal-weighted market
 
     # --- Structural / context features (XGBoost only, NOT deep combiner) ---
     # monthly-compatible but not cross-sectional return signals
@@ -123,6 +101,7 @@ FEATURE_GROUPS: dict[str, list[str]] = {
         "dist_EMA_9", "dist_EMA_21", "dist_EMA_50","dist_EMA_100","dist_EMA_200",
     ],
     "volume": [
+        
         "volume_surge_monthly",
         "volume_surge_weekly",
         "obv_trend",
@@ -132,7 +111,7 @@ FEATURE_GROUPS: dict[str, list[str]] = {
         "RSI_14",
     ],
     "wq_features": [
-        "WQ_Alpha_001",
+        
         "WQ_Alpha_002",
         "WQ_Alpha_006",
         "WQ_Alpha_007",
@@ -141,16 +120,18 @@ FEATURE_GROUPS: dict[str, list[str]] = {
         "WQ_Alpha_024",
         "WQ_Alpha_028",
         "WQ_Alpha_040",
-        "WQ_Alpha_101",
+
+        "WQ_Alpha_102",
         "WQ_Alpha_103",
-        "WQ_Alpha_200",
-        "WQ_Alpha_201",
-        "WQ_Alpha_202"
+        "WQ_Alpha_104",
+        "WQ_Alpha_105",
+        #"WQ_Alpha_201",
+        #"WQ_Alpha_202"
     ],
     
-    "price_structure": [
-    "dist_52w_high",
-    "log_ret_skip1m",]
+    #"price_structure": [
+    #"dist_52w_high",
+    #"log_ret_skip1m",]
 
 }
 

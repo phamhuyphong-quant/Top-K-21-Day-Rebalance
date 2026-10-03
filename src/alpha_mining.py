@@ -340,8 +340,8 @@ class WorldQuantAlphas:
         
         self.df["WQ_Alpha_104"] = self.get_alpha_104()    # BAB: negative beta proxy
         self.df["WQ_Alpha_102"] = self.get_alpha_102()    # monthly price acceleration
-        self.df["WQ_Alpha_103"] = self.get_alpha_103()    # 12-1m momentum
-        self.df["WQ_Alpha_105"] = self.get_alpha_105()
+        self.df["WQ_Alpha_103"] = self.get_alpha_103()    # value proxy: distance from 52w high
+        self.df["WQ_Alpha_105"] = self.get_alpha_105()    # 12-1m momentum
         #self.df["WQ_Alpha_201"] = self.get_alpha_201()
         #self.df["WQ_Alpha_202"] = self.get_alpha_202()
 

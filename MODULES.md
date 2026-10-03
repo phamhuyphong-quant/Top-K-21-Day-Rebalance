@@ -48,10 +48,9 @@ Constants plus one helper. Imported by `models.py`, `inference.py` and `kernel.p
 
 | Name | Description |
 |---|---|
-| `candidate_features` | Feature pool passed to `walk_forward_cv` and `generate_paper_trade_signals` (42 names): returns, volatility, SMA/EMA distances, volume, RSI, `dist_52w_high`, `log_ret_skip1m`, and 14 `WQ_Alpha_*` columns. Four structural features are commented out. See [Known issues](#known-issues): 7 names are not produced by `build_features`. |
-| `final_features` | Legacy hand-picked list of 20 features. Not used. |
+| `candidate_features` | Feature pool passed to `walk_forward_cv` and `generate_paper_trade_signals` (38 names): 5 returns, 6 volatility, 10 SMA/EMA distances, 4 volume, `RSI_14`, and 12 `WQ_Alpha_*` columns (002, 006, 007, 013, 016, 024, 028, 040, 102, 103, 104, 105). Every name is produced by `build_features`. `dist_52w_high`, `log_ret_skip1m`, `WQ_Alpha_201/202` and four structural features are commented out. |
 | `BASE_MODEL_PARAMS` | Default XGBoost parameters: `rank:ndcg`, `device='cuda'`, `tree_method='hist'`, 150 trees, depth 3, `min_child_weight=5`, `learning_rate=0.03`, `subsample=0.7`, `colsample_bytree=0.6`, `reg_lambda=5`, `reg_alpha=1`, `lambdarank_pair_method='topk'`, `lambdarank_num_pair_per_sample=20`, `ndcg_exp_gain=False`, `random_state=42`. |
-| `FEATURE_GROUPS` | `{group: [features]}` for `returns`, `volatility`, `moving_average`, `volume`, `rsi`, `wq_features`, `price_structure`. Correlation pruning only compares features **within** a group. |
+| `FEATURE_GROUPS` | `{group: [features]}` for `returns`, `volatility`, `moving_average`, `volume`, `rsi`, `wq_features`. Together the groups cover exactly the features in `candidate_features`. The `price_structure` group is commented out. Correlation pruning only compares features **within** a group. |
 | `ALL_GROUP_NAMES` | `list(FEATURE_GROUPS)`. |
 | `usedSymbols` | The 280 tickers that `kernel.py` filters the market data down to. |
 | `groups_to_features(group_names)` | Flattens group names into one feature list. |
@@ -88,7 +87,7 @@ Feature engineering, targets and market-regime columns. Contract for every per-s
 | `volume(df)` | `vol_5d/1m/3m`, `volume_surge_weekly/monthly` |
 | `rsi(df, window_length=14)` | `RSI_14` |
 | `volume_quality(df)` | `obv_trend`, `price_vol_divergence` |
-| `price_structure(df)` | `dist_52w_high`, `log_ret_skip1m`. **Currently not called** by `build_features` (see Known issues) |
+| `price_structure(df)` | `dist_52w_high`, `log_ret_skip1m`. Not called by `build_features` and not in `candidate_features`; call it yourself if you want these features |
 | `turnover_ratio(df)`, `limit_bias(df, d=60)`, `amihud_illiquidity(df)` | Structural features. Computed, but their candidate entries in `config.py` are commented out |
 | `adtv(df, window=21)` | 21-day average daily traded value, used for the liquidity mask |
 | `market_breadth(df, liquidity_mask=None)` | Breadth columns such as `breadth_ema21` |
@@ -271,9 +270,5 @@ Because `generate_paper_trade_signals` trains on the last 735 labelled dates, th
 
 ## Known issues
 
-Also listed in the [README](README.md#known-issues).
-
-1. **Feature mismatch.** `config.candidate_features` includes `dist_52w_high`, `log_ret_skip1m`, `WQ_Alpha_001`, `WQ_Alpha_101`, `WQ_Alpha_200`, `WQ_Alpha_201` and `WQ_Alpha_202`, which `build_features` does not produce (verified on synthetic data). `WQ_Alpha_102`, `104` and `105` are produced but not listed. Selecting columns from the `build_features` output with `candidate_features` raises `KeyError`. Fix by re-enabling `price_structure(df)` and the missing alphas, or by updating `candidate_features` and `FEATURE_GROUPS`. The comments in `config.py` for alpha 103 (monthly acceleration) and in `alpha_mining.py` (103 is 12-1m momentum, 102 is acceleration) also disagree.
-2. **Notebooks use the previous walk-forward API** (`initial_train_months`, `test_months`), which `walk_forward_cv` and `generate_folds` no longer accept.
-3. **`daily_update.yml` has no schedule**, only `workflow_dispatch`.
-4. **Different Sharpe conventions:** `print_performance_report` uses `rf_annual=0.045`; `sharpe_diff_block_bootstrap` defaults to 0.
+1. **Notebooks use the previous walk-forward API** (`initial_train_months`, `test_months`), which `walk_forward_cv` and `generate_folds` no longer accept.
+2. **Different Sharpe conventions:** `print_performance_report` uses `rf_annual=0.045`; `sharpe_diff_block_bootstrap` defaults to 0.
