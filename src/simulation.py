@@ -43,10 +43,32 @@ class DataEngine():
         if pos < 0:
             return False
         return arr['rows'].iloc[pos]
+    def get_prev(self, symbol):
+        """Last row strictly before today (the reference price known when the order is placed)."""
+        if self.is_finished() or symbol not in self.symbol_arrays:
+            return False
+        today = self.trading_dates[self.idx]
+        arr = self.symbol_arrays[symbol]
+        pos = np.searchsorted(arr['dates'], np.datetime64(today), side='left') - 1
+        if pos < 0:
+            return False
+        return arr['rows'].iloc[pos]
     def get_today(self):
         return self.trading_dates[self.idx]
     def get_date(self, date):
         return self.date_to_rows.get(date, self.data.iloc[0:0])
+
+
+def tick_size(price_vnd):
+    return 10 if price_vnd < 10_000 else 50 if price_vnd < 50_000 else 100
+
+def ceiling_price(ref, unit=1.0, limit=0.07):
+    """unit = VND per price unit in your data (1000 if prices are in thousand VND)."""
+    c = ref * unit * (1 + limit)
+    t = tick_size(c)
+    return (c // t) * t / unit
+
+
 @dataclass 
 class pack():
     amount:int
@@ -256,15 +278,21 @@ def build_data_engines(df_raw, df_predict, df_condition=None):
 class OrderManager():
 
     def __init__(self, initial, topk, df_raw: 'DataEngine', df_predict: 'DataEngine',
-                 df_condition: 'DataEngine' = None, regime_filter: FilterGroup = None):
+                 df_condition: 'DataEngine' = None, regime_filter: FilterGroup = None,
+                 price_unit: float = 1.0):
         """
         df_raw / df_predict / df_condition must already be DataEngine instances
         (build them once with build_data_engines()). Their cursors are rewound
         via reset() so the same engines can be reused cheaply across many runs.
+
+        price_unit: VND per price unit in the 'close' column. Use 1.0 if prices
+        are in full VND (e.g. 15000), 1000.0 if in thousand VND (e.g. 15.0).
+        Needed to compute the daily ceiling price correctly.
         """
         self.initial = initial
         self.topk = topk
         self.regime_filter = regime_filter
+        self.price_unit = price_unit
         self.portfolio = None
 
         self.df_raw = df_raw
@@ -346,7 +374,8 @@ class OrderManager():
                     target_weights = pd.Series(weights, index=symbols)
                 self._selling_phase(prt,target_weights, curr_date, lot_size=100)
             if (cnt - 3)%21 == 0:
-                self._buying_phase(prt,target_weights,curr_date,lot_size=100)
+                self._buying_phase(prt,target_weights,curr_date,lot_size=100,
+                                   unit=self.price_unit)
             self.df_raw.update_idx()
             self.df_predict.update_idx()
             if self.df_condition is not None:
@@ -419,45 +448,58 @@ class OrderManager():
             if stock.available_shares == 0 and not stock.pending_shares:
                 del prt.positions[symbol]
 
-    def _buying_phase(self, prt, target_weights, curr_date, lot_size=100):
-        # NAV as of today, same basis _selling_phase used 3 days ago when it
-        # computed target values -- this keeps buy/sell sizing consistent
-        # with "target_weights * NAV", not "target_weights * cash-on-hand".
-        nav = prt.history[-1][1] if prt.history else prt.liquid_cash
+    def _buying_phase(self, prt, target_weights, curr_date, lot_size=100,
+                      reserve_at_ceiling=True, unit=1.0):
+        """
+        Orders are placed the evening before (T-1) and fill at the ATC close of T.
+          - Share count is sized from the T-1 close (reference price) and T-1 NAV.
+          - Buying power is checked at the ceiling price (when reserve_at_ceiling),
+            with cash reserved cumulatively across the batch of orders.
+          - Cash is actually debited at the real T close.
+        """
+        # NAV at order time = end of the previous trading day (history[-1] is today)
+        nav_order = prt.history[-2][1] if len(prt.history) >= 2 else prt.liquid_cash
+        cash0 = prt.liquid_cash   # snapshot BEFORE any order in this batch
+        reserved = 0.0            # cash locked by earlier orders in this batch
 
         for symbol, weight in target_weights.items():
-            price_row = self.df_raw.get_last(symbol)
-            # Require a price actually dated today, same look-ahead-bias guard
-            # used in _selling_phase -- otherwise we could buy on a stale price
-            # from days ago with no indication anything was off.
-            if price_row is not False and price_row['date'] == curr_date:
-                price = price_row["close"]
+            exec_row = self.df_raw.get_last(symbol)
+            ref_row  = self.df_raw.get_prev(symbol)
+            if exec_row is False or ref_row is False or exec_row['date'] != curr_date:
+                continue                      # no trading today -> order never fills
 
-                # Only buy the shortfall vs. target value -- a symbol already
-                # holding its full (or more than its) target weight from a
-                # prior cycle should not be bought again from scratch.
-                stock = prt.positions.get(symbol)
-                current_shares = 0
-                if stock is not None:
-                    current_shares = stock.available_shares + sum(p.amount for p in stock.pending_shares)
-                current_value = current_shares * price
-                target_value = nav * weight
-                shortfall_value = target_value - current_value
-                if shortfall_value <= 0:
-                    continue
+            ref        = ref_row['close']     # price known when you place the order
+            exec_price = exec_row['close']    # price you actually get at ATC
+            ceil       = ceiling_price(ref, unit)
+            assert ceil >= ref, f"bad ceiling for {symbol}: ref={ref}, ceil={ceil} (check price_unit)"
+            if exec_price > ceil:
+                # Should never happen with unadjusted prices; flags unit/adjustment problems.
+                prt.skipped_orders.append((curr_date, "buy", symbol, "close_above_ceiling"))
+                continue
 
-                # If any of the configured queries is satisfied for this
-                # symbol today, only buy a fraction of the shortfall
-                # instead of going all the way to target weight.
-                if self.regime_filter is not None:
-                    row = self._get_condition_row(symbol, curr_date)
-                    if row is not None:
-                        shortfall_value *= self.regime_filter.compute(row)
+            stock = prt.positions.get(symbol)
+            current_shares = 0
+            if stock is not None:
+                current_shares = stock.available_shares + sum(p.amount for p in stock.pending_shares)
 
-                max_shares = shortfall_value / price
-                shares_to_buy = (int(max_shares / lot_size)) * lot_size
-                if shares_to_buy >= lot_size:
-                    prt.execute_buy(symbol, shares_to_buy, price, date=curr_date)
+            # --- sizing uses ONLY order-time information ---
+            shortfall = nav_order * weight - current_shares * ref
+            if shortfall <= 0:
+                continue
+            if self.regime_filter is not None:
+                row = self._get_condition_row(symbol, curr_date)   # row T = data up to T-1, OK
+                if row is not None:
+                    shortfall *= self.regime_filter.compute(row)
+
+            px_reserve = ceil if reserve_at_ceiling else ref
+            by_target  = shortfall / ref
+            by_cash    = (cash0 - reserved) / (px_reserve * (1 + prt.fee))
+            shares     = int(min(by_target, by_cash) // lot_size) * lot_size
+            if shares < lot_size:
+                continue
+
+            reserved += shares * px_reserve * (1 + prt.fee)
+            prt.execute_buy(symbol, shares, exec_price, date=curr_date)  # fill at real close
 
 
 class NullHypothesisTest(OrderManager):

@@ -101,7 +101,8 @@ p1 = FilterGroup(
     transformations=[StepFilter(0)],          # 0 = no new buys while the condition holds
 )
 om = OrderManager(initial=500_000, topk=20, df_raw=raw_e, df_predict=pred_e,
-                  df_condition=cond_e, regime_filter=p1)
+                  df_condition=cond_e, regime_filter=p1,
+                  price_unit=1.0)                 # 1000.0 if `close` is in thousand VND
 om.run_strategy(allocation_strategy="equal")  # or "rank_weighted"
 history = pd.DataFrame(om.portfolio.history, columns=["date", "total_value"])
 ```
@@ -110,11 +111,11 @@ history = pd.DataFrame(om.portfolio.history, columns=["date", "total_value"])
 |---|---|
 | `DataEngine`, `build_data_engines` | Aligned, cursor-based data access with date-set checks (no look-ahead) |
 | `Portfolio` | Cash and positions, 0.1% fee per side, 0.1% sell tax, 3-day settlement lag |
-| `OrderManager` | Rebalances every 21 days into the top-`topk` by `pred_score`, 100-share lots; sells first, buys 3 days later |
+| `OrderManager` | Rebalances every 21 days into the top-`topk` by `pred_score`, 100-share lots; sells first, then 3 days later buys with orders sized from the previous close and capped by cash reserved at the ceiling price, filled at that day's close |
 | `StepFilter`, `RampFilter`, `FilterGroup` | Exposure multipliers; a `FilterGroup` applies its transformations when its condition string is true |
 | `NullHypothesisTest` | Same engine with random picks, for Monte Carlo baselines |
 
-The filter multiplier scales the buy shortfall on the buy day. No slippage is modelled.
+The filter multiplier scales the buy shortfall on the buy day. Buy orders mimic an evening order filled at the next ATC close: shares are sized from the T-1 close and NAV, buying power is checked at the ceiling price, and cash is debited at the T close (details in [MODULES.md](MODULES.md)). Set `price_unit=1000.0` if `close` is in thousand VND, since the ceiling price depends on it. No slippage is modelled and ATC orders are assumed to fill in full.
 
 ### 5. Evaluation: `src/evaluation.py`
 

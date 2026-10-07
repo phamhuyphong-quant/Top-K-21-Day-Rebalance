@@ -170,7 +170,8 @@ Example rolling setup: `window_mode="rolling", initial_train_dates=756, train_pe
 
 Day-by-day backtest engine. Prices come from `df_raw`, scores from `df_predict`, and an optional third frame feeds the entry filter.
 
-- **`class DataEngine(df)`**: Cursor-based access to a frame: `get_today`, `get_date`, `get_last(symbol)`, `get_upcoming(symbol)`, `update_idx`, `is_finished`, `reset`. `get_last` only returns data up to the cursor, which prevents look-ahead.
+- **`class DataEngine(df)`**: Cursor-based access to a frame: `get_today`, `get_date`, `get_last(symbol)`, `get_prev(symbol)`, `get_upcoming(symbol)`, `update_idx`, `is_finished`, `reset`. `get_last` only returns data up to the cursor, which prevents look-ahead. `get_prev` returns the last row strictly before the cursor date, i.e. the reference price known when an evening order is placed.
+- **`tick_size(price_vnd)`** and **`ceiling_price(ref, unit=1.0, limit=0.07)`**: HOSE tick size (10 / 50 / 100 VND below 10,000 / below 50,000 / above) and the next day's ceiling, `ref × 1.07` rounded down to the tick. `unit` is VND per price unit in the data (1000 if `close` is in thousand VND). The result is only exact when `ref` is an unadjusted close.
 - **`class pack`** and **`class Stock`**: Share lots that are still settling. `add_pack`, `next_day`, `reduce_shares`.
 - **`class Portfolio(initial)`**: `fee = 0.1%` per side, `tax = 0.1%` on sells, settlement lag `T = 3`. `execute_buy` and `execute_sell` (sale proceeds go to a pending-cash list), `next_day` (settles cash, marks to market, appends to `history` and `holdings_history`). Failed orders are logged in `skipped_orders`.
 - **`class DataMismatch`**: raised when the frames do not cover the same dates.
@@ -179,7 +180,16 @@ Day-by-day backtest engine. Prices come from `df_raw`, scores from `df_predict`,
   - `RampFilter(column, floor, threshold, min_value=0.0, max_value=1)`: linear ramp on a column value; NaN or missing column means no effect.
   - `FilterGroup(condition=None, transformations=None)`: evaluates `condition` (a pandas-style expression string, run with `eval`, so use trusted strings only) on a row. If false the multiplier is 1.0; if true it is the product of the transformations. **P1** is `FilterGroup("market1m_ema21-market3m_ema63<0 and regime_bucket_monthly=='Q1'", [StepFilter(0)])`.
 - **`build_data_engines(df_raw, df_predict, df_condition=None)`**: Trims everything to the prediction date range, checks that the date sets are identical (else `DataMismatch`) and returns three `DataEngine`s. Build once, reuse via `reset()`.
-- **`class OrderManager(initial, topk, df_raw, df_predict, df_condition=None, regime_filter=None)`**: `run_strategy(allocation_strategy="equal" | "rank_weighted")` loops over days; on every 21st day it selects the top-`topk` by `pred_score` and sells names that left the set (or trims overweight ones); three days later it buys the shortfall to target weight in 100-share lots. The filter multiplier scales that buy shortfall on the buy day, so a multiplier of 0 blocks new purchases but does not liquidate existing holdings. `get_holdings(start, end)` and `get_symbols_held(start, end)` report positions after a run. No slippage is modelled.
+- **`class OrderManager(initial, topk, df_raw, df_predict, df_condition=None, regime_filter=None, price_unit=1.0)`**: `run_strategy(allocation_strategy="equal" | "rank_weighted")` loops over days; on every 21st day it selects the top-`topk` by `pred_score` and sells names that left the set (or trims overweight ones); three days later it buys the shortfall to target weight in 100-share lots. The filter multiplier scales that buy shortfall on the buy day, so a multiplier of 0 blocks new purchases but does not liquidate existing holdings.
+
+  **Buy-order model (`_buying_phase`).** Buys mimic an order placed the evening before (T-1) that fills at the ATC close of T. Since row T of the features only contains data up to T-1, the signal is available at that time.
+  - *Sizing* uses order-time information only: the T-1 close as price and the T-1 NAV (`history[-2]`).
+  - *Buying power* is checked at the ceiling price (T-1 close × 1.07, rounded down to the tick), as brokers typically reserve cash for price-less orders at the ceiling. Cash is snapshotted once before the loop and reserved cumulatively across the batch, so later symbols see less cash. Pass `reserve_at_ceiling=False` to `_buying_phase` to reserve at the T-1 close instead.
+  - *Fill* happens at the T close, and cash is debited at that price.
+  - *Checks:* an assert fires if the ceiling is below the reference price (usually a wrong `price_unit`), and a buy whose T close is above the ceiling is skipped and logged in `skipped_orders` as `close_above_ceiling` (it signals dividend-adjusted prices).
+  - `price_unit` is the VND-per-unit of the `close` column (1.0 for full VND, 1000.0 for thousand VND).
+
+  `get_holdings(start, end)` and `get_symbols_held(start, end)` report positions after a run. No slippage is modelled and ATC buys are assumed to fill in full.
 - **`class NullHypothesisTest(OrderManager)`**: same engine, but picks `topk` stocks uniformly at random each rebalance, for Monte Carlo baselines.
 
 ---
@@ -272,3 +282,5 @@ Because `generate_paper_trade_signals` trains on the last 735 labelled dates, th
 
 1. **Notebooks use the previous walk-forward API** (`initial_train_months`, `test_months`), which `walk_forward_cv` and `generate_folds` no longer accept.
 2. **Different Sharpe conventions:** `print_performance_report` uses `rf_annual=0.045`; `sharpe_diff_block_bootstrap` defaults to 0.
+3. **Buy-order assumptions in `simulation.py`:** ATC buys always fill in full, although in reality a close at the ceiling often leaves buyers unfilled. Reserving cash at the ceiling is an assumption about broker behaviour and should be checked against the real broker. The ceiling needs unadjusted closes, so dividend-adjusted prices can trigger the `close_above_ceiling` skip.
+4. **Selling phase is not yet order-time based:** `_selling_phase` still sizes trims from the same-day close and NAV, while buys use the T-1 close and NAV. Full exits (selling all available shares) are unaffected.
