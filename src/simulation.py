@@ -390,59 +390,53 @@ class OrderManager():
         return dashboard.iloc[-self.topk :]
 
     def _selling_phase(self, prt, target_weights, curr_date, lot_size=100):
+        """
+        Mirrors _buying_phase: orders are placed the evening before (T-1) and fill
+        at the ATC close of T.
+        - Trim sizes use the T-1 close and T-1 NAV (known at order time).
+        - Every fill (full exit or trim) happens at the real T close.
+        """
         best_stocks = target_weights.index.tolist()
-        # NAV as of today (prt.next_day already ran earlier this loop iteration
-        # and appended today's mark-to-market value to history).
-        nav = prt.history[-1][1] if prt.history else prt.liquid_cash
+        # NAV at order time = end of the previous trading day (history[-1] is today)
+        nav_order = prt.history[-2][1] if len(prt.history) >= 2 else prt.liquid_cash
 
         # Iterate over a list of keys so we can safely delete from the dict during the loop
         for symbol in list(prt.positions.keys()):
             stock = prt.positions[symbol]
-
-            # Check if there are any shares at all (available or pending)
             total_shares = stock.available_shares + sum(p.amount for p in stock.pending_shares)
 
             if total_shares > 0:
-                # Use get_last to prevent look-ahead bias
-                price_row = self.df_raw.get_last(symbol)
-                if price_row is not False and price_row['date'] == curr_date:
-                    price = price_row["close"]
+                exec_row = self.df_raw.get_last(symbol)
+                # No trading today -> the order never fills
+                if exec_row is not False and exec_row['date'] == curr_date:
+                    exec_price = exec_row["close"]      # fill price (ATC close of T)
 
                     if symbol not in best_stocks:
-                        # Full exit: no longer part of the target portfolio at all.
-                        # You will need to decide how to handle pending_shares here.
-                        # Currently, this only sells what is strictly available.
+                        # Full exit: no sizing needed, sell everything available.
+                        # Pending (unsettled) shares can't be sold yet.
                         if stock.available_shares > 0:
                             prt.execute_sell(
-                                symbol,
-                                stock.available_shares,
-                                price,
-                                delay=0,
-                                date=curr_date,
+                                symbol, stock.available_shares, exec_price,
+                                delay=0, date=curr_date,
                             )
                     else:
-                        # Still in the target portfolio, but may be overweight
-                        # (e.g. it was held last cycle and got bought again, or
-                        # its weight simply shrank). Trim down to target value
-                        # instead of blindly re-buying/holding as-is.
-                        weight = target_weights[symbol]
-                        current_value = total_shares * price
-                        target_value = nav * weight
-                        excess_value = current_value - target_value
-                        if excess_value > 0 and stock.available_shares > 0:
-                            shares_to_sell = int(excess_value / price)
-                            # Respect lot size, and never sell more than what's
-                            # actually available (pending shares aren't liquid yet).
-                            shares_to_sell = (shares_to_sell // lot_size) * lot_size
-                            shares_to_sell = min(shares_to_sell, stock.available_shares)
-                            if shares_to_sell >= lot_size:
-                                prt.execute_sell(
-                                    symbol,
-                                    shares_to_sell,
-                                    price,
-                                    delay=0,
-                                    date=curr_date,
-                                )
+                        # Still in the target set but possibly overweight: trim.
+                        # Sizing uses ONLY order-time information.
+                        ref_row = self.df_raw.get_prev(symbol)
+                        if ref_row is not False:
+                            ref = ref_row["close"]      # T-1 close
+                            current_value = total_shares * ref
+                            target_value  = nav_order * target_weights[symbol]
+                            excess_value  = current_value - target_value
+                            if excess_value > 0 and stock.available_shares > 0:
+                                shares_to_sell = int(excess_value / ref)
+                                shares_to_sell = (shares_to_sell // lot_size) * lot_size
+                                shares_to_sell = min(shares_to_sell, stock.available_shares)
+                                if shares_to_sell >= lot_size:
+                                    prt.execute_sell(
+                                        symbol, shares_to_sell, exec_price,
+                                        delay=0, date=curr_date,
+                                    )
 
             # Clean up empty positions to keep the dictionary lean
             if stock.available_shares == 0 and not stock.pending_shares:
