@@ -9,6 +9,11 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LassoCV
 import gc
 import sys
+import torch
+from torch import nn
+from torch.utils.data import TensorDataset, DataLoader
+
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from src.deep_combiner import AlphaForgeCombiner
 def select_features_by_icir(
@@ -236,12 +241,12 @@ def test_train_spliter(df, test_start, features):
 
     # 3. Extract X, y, and qids for Training
     X_train = train_df[features]
-    y_train = train_df['target_quintile']
+    y_train = train_df['target_magnitude']
     qids_train = train_df['qid']
 
     # 4. Extract X, y, and qids for Testing
     X_test = test_df[features]
-    y_test = test_df['target_quintile']
+    y_test = test_df['target_magnitude']
     qids_test = test_df['qid']
 
     return X_train,y_train,qids_train,X_test,y_test,qids_test,test_df
@@ -522,9 +527,9 @@ def _daily_precision_at_k(
     top_k, same yardstick, on both sides. This replaces the old version,
     which compared each model's top_k picks against that model's own
     eval_target_col "best group" — a group whose size differs wildly
-    across models (target_bucket ≈ 20 stocks vs target_quintile ≈ 20% of
+    across models (target_bucket ≈ 20 stocks vs target_magnitude ≈ 20% of
     the universe, e.g. ~100 stocks), making precision@k numbers look
-    directly comparable across models when they weren't: a quintile-scored
+    directly comparable across models when they weren't: a magnitude-scored
     model's precision@20 partly reflects that its "top" bucket is ~5x
     easier to land in by chance, not that it's a better model.
 
@@ -575,7 +580,7 @@ def score_and_evaluate(
     fold: Fold,
     total_folds: int,
     path_label: str,
-    eval_target_col: str = "target_quintile",
+    eval_target_col: str = "target_magnitude",
     top_k: int = 20,
 ) -> tuple[pd.DataFrame, float]:
     """
@@ -583,7 +588,7 @@ def score_and_evaluate(
     top_k excess return. Expects test_df to have a 'pred_score' column already set.
 
     eval_target_col: the column treated as ground-truth relevance for NDCG
-    and for precision@top_k's "best group" check. Defaults to 'target_quintile'
+    and for precision@top_k's "best group" check. Defaults to 'target_magnitude'
     (used by mse/linear/alphaforge). Each model declares its own value via
     MODEL_REGISTRY / the alphaforge branch in walk_forward_cv, so this default
     only matters for direct/manual calls.
@@ -727,34 +732,34 @@ def predict_alphaforge(
     fold: Fold,
     alpha_pool: list[str],
     combiner_kwargs: dict | None = None,
+    label_horizon: int = 21,
+    ret_col: str = "target_magnitude",   # match the evaluation target
 ) -> pd.DataFrame:
-    """
-    AlphaForge Algorithm 2 (arXiv:2406.18394).
-    Mega-Alpha is the sole ranking signal — no XGBoost involved.
-
-    At each test date d, the combiner sees only:
-      - the full training history, plus
-      - test rows from dates strictly before d
-    This preserves the paper's walk-forward guarantee within the fold.
-
-    Returns fold.test_df with 'pred_score' column set to Mega_Alpha.
-    """
     kwargs   = combiner_kwargs or {}
     combiner = AlphaForgeCombiner(
         max_active_factors=min(13, len(alpha_pool)), **kwargs
     )
 
-    test_df     = fold.test_df.copy()
-    accumulated = fold.train_df.copy()
+    test_df  = fold.test_df.copy()
+    all_df   = pd.concat([fold.train_df, fold.test_df]).sort_values("date")
+    all_dates = np.sort(all_df["date"].unique())
+    pos       = {d: i for i, d in enumerate(all_dates)}
+    lookback  = combiner.ic_window * 2          # what fit_and_predict actually uses
 
     for d in sorted(test_df["date"].unique()):
+        i       = pos[d]
+        last_ok = i - label_horizon - 1         # label at t needs close[t+21] <= close[d-1]
+        lo      = max(0, last_ok - lookback + 1)
+        hist = all_df[(all_df["date"] >= all_dates[lo]) &
+                      (all_df["date"] <= all_dates[last_ok])]
+
         cur    = test_df[test_df["date"] == d]
-        scores = combiner.fit_and_predict(accumulated, cur, alpha_pool)
+        scores = combiner.fit_and_predict(hist, cur, alpha_pool, ret_col=ret_col)
         test_df.loc[cur.index, "Mega_Alpha"] = scores.values
-        accumulated = pd.concat([accumulated, cur])
 
     test_df["pred_score"] = test_df["Mega_Alpha"]
     return test_df
+
 def predict_xgboost_ndcg(
     fold: Fold,
     features: list[str],
@@ -774,7 +779,7 @@ def predict_xgboost_ndcg(
     ranker.fit(
         train_df[features], train_df["target_magnitude"],
         qid=train_df["qid"],
-        #eval_set=[(test_df[features], test_df["target_quintile"])],
+        #eval_set=[(test_df[features], test_df["target_magnitude"])],
         #eval_qid=[test_df["qid"]],
         verbose=False,
     )
@@ -801,7 +806,7 @@ def predict_xgboost_mse(
     model.fit(
         train_df[features], train_df["target_magnitude"],
         #qid=train_df["qid"],
-        #eval_set=[(test_df[features], test_df["target_quintile"])],
+        #eval_set=[(test_df[features], test_df["target_magnitude"])],
         #eval_qid=[test_df["qid"]],
         verbose=False,
     )
@@ -871,10 +876,7 @@ def predict_lstm_mse(
 
     Returns fold.test_df with 'pred_score' column set.
     """
-    import torch
-    from torch import nn
-    from torch.utils.data import TensorDataset, DataLoader
-
+   
     params      = model_params or {}
     seq_len     = params.get("seq_len", 10)
     hidden_size = params.get("hidden_size", 32)
@@ -1033,12 +1035,11 @@ class ModelSpec:
     """
     name: str
     predict_fn: callable
-    eval_target_col: str = "target_quintile"
+    eval_target_col: str = "target_magnitude"
 
 
 # Single source of truth for "which model scores against which column".
-# xgboost_ndcg is the only one that diverges today (trains AND scores on
-# target_bucket); mse/linear/alphaforge all score on target_quintile.
+# All models train and score on target_magnitude.
 # alphaforge is intentionally NOT here — its predict_fn takes an alpha_pool
 # argument instead of (fold, features, model_params), so it keeps its own
 # branch in walk_forward_cv below.
@@ -1131,7 +1132,11 @@ def walk_forward_cv(
     min_date           = df["date"].min()
     max_date           = df["date"].max()
     unique_dates       = np.sort(df["date"].unique())
-    initial_train_end  = pd.Timestamp(unique_dates[min(initial_train_dates, len(unique_dates) - 1)])
+    LABEL_HORIZON = 21  # next_1m_ret = log(close[t+21] / close[t])
+
+    first_test_idx    = min(initial_train_dates, len(unique_dates) - 1)
+    fit_end_idx       = max(1, first_test_idx - LABEL_HORIZON)
+    initial_train_end = pd.Timestamp(unique_dates[fit_end_idx])
 
     # --- One-time GP mining (fit on initial window, transform full df) ---
     gp_cols = []
@@ -1249,7 +1254,7 @@ def walk_forward_cv(
             # MODEL_REGISTRY entry uses, so it can't sit in the registry as-is.
             test_df         = predict_alphaforge(fold, alpha_pool)
             path_label      = "AlphaForge (Mega)"
-            eval_target_col = "target_quintile"
+            eval_target_col = "target_magnitude"
         else:
             spec = MODEL_REGISTRY.get(model)
             if spec is None:

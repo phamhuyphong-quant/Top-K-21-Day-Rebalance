@@ -131,33 +131,30 @@ class AlphaForgeCombiner:
             active = alpha_cols
             self.active_factors_ = active
 
-        # --- Step 4: fit Ridge on recent history ---
+        # --- Step 4: fit Ridge on cross-sectionally ranked data ---
         recent_dates = dates[-self.ic_window:]
         recent = hist[hist["date"].isin(recent_dates)].dropna(subset=active + [ret_col])
 
         if recent.empty:
-            # Fallback if history is completely missing
             self.weights_ = {f: 1.0 / len(active) for f in active}
         else:
-            X_fit = recent[active].values
-            y_fit = recent[ret_col].values
+            g = recent.groupby("date")
+            X_fit = (g[active].rank(pct=True) - 0.5).values   # per-date, centered at 0
+            y_fit = (g[ret_col].rank(pct=True) - 0.5).values
 
-            # Sign-flip logic
             sign_vector = np.array([np.sign(ic_records[f]) if ic_records[f] != 0 else 1.0 for f in active])
             X_fit = X_fit * sign_vector
 
-            from sklearn.linear_model import Ridge
             reg = Ridge(alpha=self.ridge_alpha, fit_intercept=False)
             reg.fit(X_fit, y_fit)
-
             self.weights_ = {f: coef * sign_vector[i] for i, (f, coef) in enumerate(zip(active, reg.coef_))}
 
-        # --- Step 5: predict on current date ---
+        # --- Step 5: predict on current date (same ranking) ---
         cur = current_df.copy()
+        cur_rank = cur[list(self.weights_)].rank(pct=True) - 0.5
         mega_alpha = pd.Series(0.0, index=cur.index)
         for f, w in self.weights_.items():
-            mega_alpha += w * cur[f].fillna(0)
-
+            mega_alpha += w * cur_rank[f].fillna(0)
         return mega_alpha
    
     # ------------------------------------------------------------------
