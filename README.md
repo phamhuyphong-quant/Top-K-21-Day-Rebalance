@@ -111,7 +111,7 @@ history = pd.DataFrame(om.portfolio.history, columns=["date", "total_value"])
 |---|---|
 | `DataEngine`, `build_data_engines` | Aligned, cursor-based data access with date-set checks (no look-ahead) |
 | `Portfolio` | Cash and positions, 0.1% fee per side, 0.1% sell tax, 3-day settlement lag |
-| `OrderManager` | Rebalances every 21 days into the top-`topk` by `pred_score`, 100-share lots; sells first, then 3 days later buys with orders sized from the previous close and capped by cash reserved at the ceiling price, filled at that day's close |
+| `OrderManager` | Rebalances every 21 days into the top-`topk` by `pred_score`, 100-share lots; sells first (trims sized from the previous close), then 3 days later buys with orders sized from the previous close and capped by cash reserved at the ceiling price, filled at that day’s close |
 | `StepFilter`, `RampFilter`, `FilterGroup` | Exposure multipliers; a `FilterGroup` applies its transformations when its condition string is true |
 | `NullHypothesisTest` | Same engine with random picks, for Monte Carlo baselines |
 
