@@ -638,6 +638,7 @@ def mine_gp_factors(
     features: list[str],
     initial_train_end: pd.Timestamp,
     n_components: int = 15,
+    target_col: str = "target_magnitude",
 ) -> tuple[pd.DataFrame, list[str]]:
     """
     Fits SymbolicTransformer on the initial training window only (no leakage),
@@ -646,13 +647,16 @@ def mine_gp_factors(
 
     Fitting on the initial window only mirrors live deployment: the factor
     grammar is fixed at launch and never re-learned on future returns.
+
+    The fit target is the per-date centered percentile rank of `target_col`,
+    so GP optimises the same cross-sectional ordering the models are scored on.
     """
     from gplearn.genetic import SymbolicTransformer
     print("🧬 Mining GP alpha factors (fit on initial window only)...")
 
-    init_df = df[df["date"] < initial_train_end]
+    init_df = df[df["date"] < initial_train_end].dropna(subset=[target_col])
     X_init  = np.nan_to_num(init_df[features].values)
-    y_init  = np.nan_to_num(init_df["next_1m_ret"].values)
+    y_init  = (init_df.groupby("date")[target_col].rank(pct=True) - 0.5).values
 
     gp_model = SymbolicTransformer(
         generations=20, population_size=1000, n_components=n_components,
