@@ -44,6 +44,25 @@ candidate_features = [
     "WQ_Alpha_103",   # Value proxy: distance from 52w high (far below = cheap)
     "WQ_Alpha_104",   # BAB: negative rolling beta to equal-weighted market
     "WQ_Alpha_105",   # 12-1m momentum
+
+    # --- Slow-moving additions (monthly horizon) ---
+    "WQ_Alpha_110",   # MAX effect: -max daily return over 21d (lottery demand)
+    "WQ_Alpha_111",   # Negative 63d return skewness (crash-risk proxy)
+    "WQ_Alpha_112",   # Intermediate momentum (months 7-12)
+    "WQ_Alpha_113",   # Risk-adjusted 6-1m momentum
+    "WQ_Alpha_114",   # Information discreteness (smooth winners beat jumpy ones)
+    "WQ_Alpha_115",   # Overnight drift (21d mean of open/prev close)
+    "WQ_Alpha_116",   # Close-location value (persistent buying pressure)
+    "WQ_Alpha_117",   # Abnormal volume (log adv21 / adv252)
+    "WQ_Alpha_118",   # Low-vol anomaly via Parkinson range volatility
+
+    # --- Alpha101 adaptations (windows stretched to monthly) ---
+    "WQ_Alpha_019",   # -sign(1m ret) * (1 + rank(12m ret))
+    "WQ_Alpha_035",   # ts_rank(volume) * (1-ts_rank(c+h-l)) * (1-ts_rank(ret))
+    "WQ_Alpha_039",   # -rank(ret * (1 - rank(rel volume))) * (1 + rank(12m ret))
+    "WQ_Alpha_043",   # ts_rank(rel volume) * ts_rank(-delta(close, 21))
+    "WQ_Alpha_052",   # prior-month low vs current-month low * rank(12-1m mom) * ts_rank(volume)
+    "WQ_Alpha_055",   # -corr(rank(stochastic %K), rank(volume))
     #"WQ_Alpha_201",   # Volume trend confirmation: price momentum × volume momentum
     #"WQ_Alpha_202",   # Residual momentum: 12-1m excess return vs equal-weighted market
 
@@ -125,6 +144,25 @@ FEATURE_GROUPS: dict[str, list[str]] = {
         "WQ_Alpha_103",
         "WQ_Alpha_104",
         "WQ_Alpha_105",
+
+        # Slow-moving additions (monthly horizon)
+        "WQ_Alpha_110",
+        "WQ_Alpha_111",
+        "WQ_Alpha_112",
+        "WQ_Alpha_113",
+        "WQ_Alpha_114",
+        "WQ_Alpha_115",
+        "WQ_Alpha_116",
+        "WQ_Alpha_117",
+        "WQ_Alpha_118",
+
+        # Alpha101 adaptations (windows stretched to monthly)
+        "WQ_Alpha_019",
+        "WQ_Alpha_035",
+        "WQ_Alpha_039",
+        "WQ_Alpha_043",
+        "WQ_Alpha_052",
+        "WQ_Alpha_055",
         #"WQ_Alpha_201",
         #"WQ_Alpha_202"
     ],

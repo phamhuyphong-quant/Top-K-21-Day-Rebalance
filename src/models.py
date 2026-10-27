@@ -252,10 +252,10 @@ def test_train_spliter(df, test_start, features):
     return X_train,y_train,qids_train,X_test,y_test,qids_test,test_df
 
 def build_mega_combiner(
-    ic_window: int = 40,
+    ic_window: int | None = 40,
     ic_threshold: float = 0.02,
     icir_threshold: float = 0.2,
-    max_active_factors: int = 13,
+    max_active_factors: int = 10,
     ridge_alpha: float = 1.0,
 ):
     """
@@ -739,26 +739,23 @@ def predict_alphaforge(
     label_horizon: int = 21,
     ret_col: str = "target_magnitude",   # match the evaluation target
 ) -> pd.DataFrame:
-    kwargs   = combiner_kwargs or {}
-    combiner = AlphaForgeCombiner(
-        max_active_factors=min(13, len(alpha_pool)), **kwargs
-    )
+    kwargs   = {"max_active_factors": 10, **(combiner_kwargs or {})}
+    combiner = AlphaForgeCombiner(**kwargs)
 
     test_df  = fold.test_df.copy()
     all_df   = pd.concat([fold.train_df, fold.test_df]).sort_values("date")
-    all_dates = np.sort(all_df["date"].unique())
+    all_dates = pd.DatetimeIndex(all_df["date"].unique()).sort_values()
     pos       = {d: i for i, d in enumerate(all_dates)}
-    lookback  = combiner.ic_window * 2          # what fit_and_predict actually uses
+    
 
-    for d in sorted(test_df["date"].unique()):
+    combiner.precompute(all_df, alpha_pool, ret_col)
+
+    for d in pd.DatetimeIndex(test_df["date"].unique()).sort_values():
         i       = pos[d]
-        last_ok = i - label_horizon - 1         # label at t needs close[t+21] <= close[d-1]
-        lo      = max(0, last_ok - lookback + 1)
-        hist = all_df[(all_df["date"] >= all_dates[lo]) &
-                      (all_df["date"] <= all_dates[last_ok])]
-
+        last_ok = i - label_horizon - 1
+        assert last_ok >= 0, f"not enough history before {d}"
         cur    = test_df[test_df["date"] == d]
-        scores = combiner.fit_and_predict(hist, cur, alpha_pool, ret_col=ret_col)
+        scores = combiner.fit_and_predict(cur, all_dates[last_ok])
         test_df.loc[cur.index, "Mega_Alpha"] = scores.values
 
     test_df["pred_score"] = test_df["Mega_Alpha"]
@@ -1079,6 +1076,7 @@ def walk_forward_cv(
     nonskip_features: list[str] | None = None,
     # --- Buy-only book size for precision@k / excess-return diagnostics ---
     top_k: int = 20,
+    alphaforge_kwargs: dict | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Orchestrates walk-forward CV. model= selects the prediction path:
@@ -1256,7 +1254,7 @@ def walk_forward_cv(
             # Kept separate: predict_alphaforge's signature (fold, alpha_pool, ...)
             # doesn't match the (fold, features, model_params) shape every
             # MODEL_REGISTRY entry uses, so it can't sit in the registry as-is.
-            test_df         = predict_alphaforge(fold, alpha_pool)
+            test_df = predict_alphaforge(fold, alpha_pool, combiner_kwargs=alphaforge_kwargs)
             path_label      = "AlphaForge (Mega)"
             eval_target_col = "target_magnitude"
         else:

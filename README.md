@@ -19,7 +19,7 @@ A modular Python toolkit for building and backtesting **Top-K cross-sectional ra
 | Stage | What you get | Module |
 |---|---|---|
 | Data | Incremental OHLCV and VNINDEX download via `vnstock`, with cleaning rules | `src/data_collect.py` |
-| Features | ~40 look-ahead-safe features, WorldQuant-style alphas, market regime columns, forward-return targets | `src/features.py`, `src/alpha_mining.py` |
+| Features | 53 candidate features (27 of them WorldQuant-style alphas), market regime columns, forward-return targets. All look-ahead-safe | `src/features.py`, `src/alpha_mining.py` |
 | Ranking | Walk-forward CV (rolling or expanding) with swappable models: XGBoost LambdaRank, XGBoost MSE, Lasso, LSTM, AlphaForge combiner | `src/models.py` |
 | Entry filter | Composable exposure filters evaluated on market columns | `src/simulation.py` |
 | Simulation | Day-by-day Top-K portfolio with fees, tax, settlement lag and lot sizes | `src/simulation.py` |
@@ -28,6 +28,16 @@ A modular Python toolkit for building and backtesting **Top-K cross-sectional ra
 | Live signal | Daily Top-20 ranking, Kaggle run, Streamlit page | `src/inference.py`, `kaggle_kernel/`, `src/app.py` |
 
 Every feature at date *T* uses only data up to the close of *T-1*, and all feature selection inside a fold is fitted on that fold's training window only.
+
+> **Not recommended: gplearn factor mining.** The repo still contains gplearn code (`walk_forward_cv(use_gp=True)`, `mine_gp_factors`, `add_and_filter_alphas`, `rank_ic_fitness`). It is kept for reference only. Neither production (`kernel.py`) nor any default path uses it. Please do not use it for results you intend to trust:
+>
+> - **Selection bias.** `SymbolicTransformer` searches ~20,000 candidate expressions (20 generations × 1,000 programs) and keeps the best few by *in-sample* fitness. That is a massive multiple-testing search, and the survivors are the ones that happened to fit the initial window best.
+> - **Fitted once.** Factors are mined a single time on the initial training window and never refit. Later folds therefore use an increasingly stale factor set, and the strategy as live-run (no GP step) cannot reproduce backtests that used it.
+> - **Optimistic early folds.** Inside the window GP was fitted on, the GP factors look far better than they ever will out of sample. XGBoost (and the AlphaForge rolling IC) learns to over-trust them in fold 1 and the folds right after.
+> - **Mismatched objective.** GP maximises *pooled Pearson* correlation on raw, unnormalised features, while the models are scored on per-date rank ordering. Overlapping 21-day labels and row-level `max_samples` subsampling also make any "out-of-bag" fitness not truly out-of-sample.
+> - **Pruning does not see them.** `GP_Alpha_*` columns belong to no `FEATURE_GROUPS` group, so `corr_prune` treats each as a singleton and never prunes them against each other, even though they are typically highly correlated.
+>
+> Details and the remaining gplearn issues are in [MODULES.md](MODULES.md#gplearn-factor-mining-not-recommended).
 
 ## Installation
 
@@ -38,7 +48,7 @@ pip install -r requirements-dev.txt     # full toolkit (torch, gplearn, statsmod
 pip install -r requirements.txt         # Streamlit page only
 ```
 
-`vnstock` comes from `https://vnstocks.com/api/simple` (set in `requirements-dev.txt`). `BASE_MODEL_PARAMS` uses `device='cuda'`; change it to `'cpu'` without a GPU.
+`vnstock` comes from `https://vnstocks.com/api/simple` (set in `requirements-dev.txt`). `BASE_MODEL_PARAMS` uses `device='cuda'`; change it to `'cpu'` without a GPU. `gplearn` is only imported by `src/models.py` (and `src/alpha_mining.py` helpers) for the discouraged GP path.
 
 ## Pipeline walkthrough
 
@@ -51,7 +61,7 @@ update_market_data("market_data.parquet", get_tags(), start_date="2016-01-01")
 fetch_indicator_data("VNINDEX", "2016-01-01", "vnindex_data.parquet")
 ```
 
-This builds the dataset the rest of the pipeline expects (columns `Symbol`, `date`, `open`, `high`, `low`, `close`, `volume`). It is not included in this repository, and a full download is slow because the script pauses between symbols to respect `vnstock` rate limits. `get_tags()` returns a built-in ticker list; `get_tags(fetching=True)` pulls the live `VNALL` members. Up-to-date symbols are skipped, others are re-fetched and merged by `(date, Symbol)`. `clean_ohlcv` repairs rows that break OHLC rules.
+`get_tags()` returns a built-in ticker list (about 300 names); `get_tags(fetching=True)` pulls the live `VNALL` members. Up-to-date symbols are skipped, others are re-fetched and merged by `(date, Symbol)`. `clean_ohlcv` repairs rows that break OHLC rules. After each merge, every symbol's history up to and including its latest zero-volume day is dropped.
 
 ### 2. Features and targets: `src/features.py`
 
@@ -62,7 +72,8 @@ df_train  = build_features(df_raw, adtv_limit=2_500_000)                        
 df_latest = build_features(df_raw, adtv_limit=2_500_000, generate_target=False)  # keeps today
 ```
 
-- Feature families: returns, volatility, SMA/EMA distance, volume surge, RSI, OBV, WorldQuant alphas, structural features.
+- Feature families (all in `config.candidate_features`): returns (5), volatility (6), SMA/EMA distance (10), volume (4), RSI, and 27 `WQ_Alpha_*` columns.
+- Computed but disabled in `config.py`: structural features (`turnover_12m`, `limit_bias_60d`, `amihud_illiquidity`), `WQ_Alpha_201/202`, and `dist_52w_high` / `log_ret_skip1m` (`price_structure` is not called at all).
 - Market columns: `regime_bucket_monthly` (dispersion quartile, `Q1` lowest), `market1m_ema21`, `market3m_ema63`, breadth.
 - Label: `target_magnitude`, the next 21-day log return over trailing volatility, min-max scaled to 0–100 per date.
 - `adtv_limit` flags illiquid rows: excluded from cross-sectional statistics, removed once at the end.
@@ -86,6 +97,8 @@ df_pred, fold_ndcg = walk_forward_cv(
 - Window lengths are counts of trading dates. `RollingWindow` and `ExpandingWindow` are `WindowPolicy` classes, so new window schemes are one subclass.
 - `gap_dates` separates train and test to avoid target overlap.
 - Optional per-fold feature selection: `icir_filter` (|IC IR| threshold) and `corr_prune` (drop correlated features inside a `FEATURE_GROUPS` group).
+- `model="alphaforge"` ignores `features`, `icir_filter` and `corr_prune`. It combines every `WQ_Alpha_*` column found in the frame, using rolling RankIC/ICIR gating and a Ridge fit (tunable via `alphaforge_kwargs`).
+- Leave `use_gp=False` (the default); see the gplearn note above.
 - Output `df_pred` holds every test row with `pred_score`; `fold_ndcg` has one NDCG per fold.
 - To add a model: write `predict_<name>(fold, features, params)` returning the test frame with `pred_score`, and register it in `MODEL_REGISTRY`.
 
@@ -111,7 +124,7 @@ history = pd.DataFrame(om.portfolio.history, columns=["date", "total_value"])
 |---|---|
 | `DataEngine`, `build_data_engines` | Aligned, cursor-based data access with date-set checks (no look-ahead) |
 | `Portfolio` | Cash and positions, 0.1% fee per side, 0.1% sell tax, 3-day settlement lag |
-| `OrderManager` | Rebalances every 21 days into the top-`topk` by `pred_score`, 100-share lots; sells first (trims sized from the previous close), then 3 days later buys with orders sized from the previous close and capped by cash reserved at the ceiling price, filled at that day’s close |
+| `OrderManager` | Rebalances every 21 days into the top-`topk` by `pred_score`, 100-share lots; sells first (trims sized from the previous close), then 3 days later buys with orders sized from the previous close and capped by cash reserved at the ceiling price, filled at that day's close |
 | `StepFilter`, `RampFilter`, `FilterGroup` | Exposure multipliers; a `FilterGroup` applies its transformations when its condition string is true |
 | `NullHypothesisTest` | Same engine with random picks, for Monte Carlo baselines |
 
@@ -152,11 +165,11 @@ buy, hold, sell, gone, ranked = generate_paper_trade_signals(
 )
 ```
 
-Retrains on the latest 735 labelled trading dates and ranks today's stocks. `kaggle_kernel/kernel.py` wraps this daily with the entry-filter check and uploads `today_signals.parquet` to Hugging Face; `streamlit run src/app.py` displays it.
+Retrains an XGBoost ranker on the latest 735 labelled trading dates and ranks today's stocks. `kaggle_kernel/kernel.py` wraps this daily with the entry-filter check and uploads `today_signals.parquet` to Hugging Face; `streamlit run src/app.py` displays it. The live path does not use gplearn.
 
 ## Configuration: `config.py`
 
-`candidate_features`, `FEATURE_GROUPS` (pruning groups), `BASE_MODEL_PARAMS` (XGBoost LambdaRank defaults), `usedSymbols` (the 280-symbol universe used by the live run), `groups_to_features()`.
+`candidate_features` (53 names), `FEATURE_GROUPS` (pruning groups), `BASE_MODEL_PARAMS` (XGBoost LambdaRank defaults), `usedSymbols` (280-ticker universe for live runs), `groups_to_features()`.
 
 ## Repository layout
 
@@ -190,4 +203,4 @@ The project grew out of a research paper (Vietnamese) in `notebooks/NTH RESEARCH
 
 **Phong Phạm Huy**: [LinkedIn](https://www.linkedin.com/in/phong-phạm-huy-b64331377) · [GitHub](https://github.com/phamhuyphong-quant)
 
-GPL v3.0, see [LICENSE](LICENSE). Built on `vnstock`, XGBoost, scikit-learn, PyTorch, `gplearn` (GPL v3), AlphaForge (arXiv:2406.18394) and Kakushadze's *101 Formulaic Alphas*.
+GPL v3.0, see [LICENSE](LICENSE). Built on `vnstock`, XGBoost, scikit-learn, PyTorch, AlphaForge (arXiv:2406.18394) and Kakushadze's *101 Formulaic Alphas*. `gplearn` (GPL v3) is only used by the discouraged GP path.

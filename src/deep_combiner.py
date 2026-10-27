@@ -32,10 +32,15 @@ class AlphaForgeCombiner:
     """
     Faithful implementation of AlphaForge's Algorithm 2 (factor combination model).
 
+    Usage per walk-forward fold:
+      1. combiner.precompute(all_df, alpha_cols, ret_col)   # once per fold
+      2. combiner.fit_and_predict(current_df, last_date)    # once per test date
+
     At each rebalance date t, given a factor zoo Z = {f1, ..., fk}:
-      1. Compute rolling RankIC and ICIR for each factor over the past `ic_window` periods.
+      1. Read rolling RankIC and ICIR for each factor over the past `ic_window`
+         dates (up to `last_date`, the last date whose label is fully realized).
       2. Gate: drop factors where |RankIC| < ic_threshold OR |ICIR| < icir_threshold.
-      3. Sort survivors by |RankIC|, keep top `max_active_factors`.
+      3. Sort survivors by |ICIR|, keep top `max_active_factors`.
       4. Fit Ridge regression of those factors against recent returns → dynamic weights.
       5. Apply weights to current-date factor values → Mega-Alpha scalar per stock.
 
@@ -46,13 +51,15 @@ class AlphaForgeCombiner:
 
     Parameters
     ----------
-    ic_window : int
-        Number of past periods (dates) used to compute rolling RankIC. Default 12
-        (roughly 12 months when called monthly).
+    ic_window : int or None
+        Number of past dates used for the rolling RankIC/ICIR and for the Ridge fit.
+        None = expanding window (all history up to last_date), as in the authors' default.
     ic_threshold : float
-        Minimum |RankIC| for a factor to be considered active. Paper uses ~0.02.
+        Minimum |RankIC| for a factor to be considered active. The authors'
+        reference code uses 0.02.
     icir_threshold : float
-        Minimum |ICIR| for a factor to be considered active. Paper uses ~0.3.
+        Minimum |ICIR| for a factor to be considered active. The authors'
+        reference code uses 0.2.
     max_active_factors : int
         Top-N active factors to use in the linear combination. Paper found N=10 optimal.
     ridge_alpha : float
@@ -61,10 +68,10 @@ class AlphaForgeCombiner:
 
     def __init__(
         self,
-        ic_window: int = 40,
+        ic_window: int | None = 40,   # None = expanding (all available history)
         ic_threshold: float = 0.02,
         icir_threshold: float = 0.2,
-        max_active_factors: int = 13,   # matches your current zoo size
+        max_active_factors: int = 10, 
         ridge_alpha: float = 1.0,
     ):
         self.ic_window          = ic_window
@@ -78,42 +85,46 @@ class AlphaForgeCombiner:
         self.weights_          = {}   # {factor_name: coefficient}
         self.factor_ic_history_= {}   # {factor_name: (rolling_ic, rolling_icir)} Series
 
+        # Cache filled by precompute()
+        self._alpha_cols = None
+        self._ret_col    = None
+        self._ranked     = None       # per-date percentile ranks of factors + label
+        self._daily_ic   = None       # dates x factors rank-IC table
+
     # ------------------------------------------------------------------
-    # Core: fit on history, predict on current date
+    # Once per fold: rank within each date and cache the daily rank-IC
     # ------------------------------------------------------------------
-    def fit_and_predict(
-        self,
-        hist_df: pd.DataFrame,
-        current_df: pd.DataFrame,
-        alpha_cols: list,
-        ret_col: str = "next_1m_ret",
-    ) -> pd.Series:
-        
-        # 1. TRUNCATE HISTORY IMMEDIATELY
-        # We only need enough history for rolling IC (ic_window) + a small buffer.
-        # This prevents the loop from slowing down as the walk-forward fold progresses.
-        dates = hist_df["date"].sort_values().unique()
-        required_dates = dates[-(self.ic_window * 2):] 
-        hist = hist_df[hist_df["date"].isin(required_dates)].copy().dropna(subset=alpha_cols + [ret_col])
-        
-        # 2. VECTORIZED SPEARMAN RANK CORRELATION
-        # Rank the features and target cross-sectionally per date
-        ranked_hist = hist.groupby("date")[alpha_cols + [ret_col]].rank(pct=True)
-        ranked_hist["date"] = hist["date"] # Restore grouping key
-        
-        # Compute daily Pearson correlation on the ranks (which equals Spearman)
-        daily_ic = ranked_hist.groupby("date").apply(
-            lambda x: x[alpha_cols].corrwith(x[ret_col]), 
-            include_groups=False
+    def precompute(self, all_df: pd.DataFrame, alpha_cols: list, ret_col: str):
+        """Call once per fold. Ranks factors and label within each date and caches
+        the per-date rank-IC table (dates x factors)."""
+        cols = alpha_cols + [ret_col]
+        d = all_df.dropna(subset=cols)
+        r = d.groupby("date")[cols].rank(pct=True)
+        r["date"] = d["date"]
+        self._alpha_cols, self._ret_col = alpha_cols, ret_col
+        self._ranked = r
+        self._daily_ic = r.groupby("date").apply(
+            lambda x: x[alpha_cols].corrwith(x[ret_col]), include_groups=False
         )
 
-        # 3. CALCULATE ROLLING METRICS
-        roll_ic = daily_ic.rolling(self.ic_window, min_periods=self.ic_window // 2).mean()
-        roll_icir = roll_ic / (daily_ic.rolling(self.ic_window, min_periods=self.ic_window // 2).std() + 1e-8)
+    # ------------------------------------------------------------------
+    # Core: select factors and fit weights from the cache, predict current date
+    # ------------------------------------------------------------------
+    def fit_and_predict(self, current_df: pd.DataFrame, last_date) -> pd.Series:
+        """
+        current_df : rows of the date being predicted.
+        last_date  : last date whose label is fully realized (no later date is used).
+        """
+        alpha_cols, ret_col, w = self._alpha_cols, self._ret_col, self.ic_window
 
-        # Extract the most recent valid values
-        ic_records = roll_ic.iloc[-1].fillna(0).to_dict() if not roll_ic.empty else {f: 0.0 for f in alpha_cols}
-        icir_records = roll_icir.iloc[-1].fillna(0).to_dict() if not roll_icir.empty else {f: 0.0 for f in alpha_cols}
+        # IC/ICIR from the cache; only dates <= last_date (their labels are realized)
+        ic  = self._daily_ic.loc[:last_date]
+        ic  = ic if w is None else ic.tail(w)
+        win = len(ic) if w is None else w
+        ok  = ic.count() >= max(1, win // 2)
+        mu, sd = ic.mean().where(ok), ic.std().where(ok)
+        ic_records   = mu.fillna(0).to_dict()
+        icir_records = (mu / (sd + 1e-8)).fillna(0).to_dict()
 
         # --- Step 2: gate — keep only factors meeting both thresholds ---
         survivors = [
@@ -122,25 +133,26 @@ class AlphaForgeCombiner:
             and abs(icir_records.get(f, 0)) >= self.icir_threshold
         ]
 
-        # --- Step 3: top-N by |RankIC| ---
-        survivors_sorted = sorted(survivors, key=lambda f: abs(ic_records[f]), reverse=True)
+        # --- Step 3: top-N by |ICIR| ---
+        survivors_sorted = sorted(survivors, key=lambda f: abs(icir_records[f]), reverse=True)
         active = survivors_sorted[: self.max_active_factors]
         self.active_factors_ = active
 
         if len(active) == 0:
-            active = alpha_cols
+            # No factor passed the gate: fall back to the single most stable factor
+            # (highest |ICIR|), as in the authors' reference code, instead of
+            # blending all factors, which would defeat the purpose of the gate.
+            active = [max(alpha_cols, key=lambda f: abs(icir_records.get(f, 0)))]
             self.active_factors_ = active
 
-        # --- Step 4: fit Ridge on cross-sectionally ranked data ---
-        recent_dates = dates[-self.ic_window:]
-        recent = hist[hist["date"].isin(recent_dates)].dropna(subset=active + [ret_col])
+        # --- Step 4: fit Ridge on the cached cross-sectional ranks of the same window ---
+        r = self._ranked[self._ranked["date"].isin(ic.index)]
 
-        if recent.empty:
+        if r.empty:
             self.weights_ = {f: 1.0 / len(active) for f in active}
         else:
-            g = recent.groupby("date")
-            X_fit = (g[active].rank(pct=True) - 0.5).values   # per-date, centered at 0
-            y_fit = (g[ret_col].rank(pct=True) - 0.5).values
+            X_fit = r[active].values - 0.5          # per-date ranks, centered at 0
+            y_fit = r[ret_col].values - 0.5
 
             sign_vector = np.array([np.sign(ic_records[f]) if ic_records[f] != 0 else 1.0 for f in active])
             X_fit = X_fit * sign_vector
@@ -153,14 +165,14 @@ class AlphaForgeCombiner:
         cur = current_df.copy()
         cur_rank = cur[list(self.weights_)].rank(pct=True) - 0.5
         mega_alpha = pd.Series(0.0, index=cur.index)
-        for f, w in self.weights_.items():
-            mega_alpha += w * cur_rank[f].fillna(0)
+        for f, wt in self.weights_.items():
+            mega_alpha += wt * cur_rank[f].fillna(0)
         return mega_alpha
-   
+
     # ------------------------------------------------------------------
     # Convenience: print which factors are active and their weights
     # ------------------------------------------------------------------
     def report(self):
         print(f"Active factors ({len(self.active_factors_)}):")
-        for f, w in sorted(self.weights_.items(), key=lambda x: abs(x[1]), reverse=True):
-            print(f"  {f:30s}  weight={w:+.6f}")
+        for f, wt in sorted(self.weights_.items(), key=lambda x: abs(x[1]), reverse=True):
+            print(f"  {f:30s}  weight={wt:+.6f}")
