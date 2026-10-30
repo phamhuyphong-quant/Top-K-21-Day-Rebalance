@@ -25,7 +25,7 @@ What each module in `src/`, `config.py` and `kaggle_kernel/kernel.py` does and h
 ## Data flow
 
 ```
-data_collect.py ─► market_data.parquet, vnindex_data.parquet
+HF dataset ─► data_collect.py (pull, update, push) ─► market_data.parquet, vnindex_data.parquet
         │
         ▼
 features.build_features()
@@ -51,7 +51,7 @@ Constants plus one helper. Imported by `models.py`, `inference.py` and `kernel.p
 
 | Name | Description |
 |---|---|
-| `candidate_features` | Feature pool passed to `walk_forward_cv` and `generate_paper_trade_signals` (**53** names): 5 returns, 6 volatility, 10 SMA/EMA distances, 4 volume, `RSI_14`, and **27** `WQ_Alpha_*` columns: 002, 006, 007, 013, 016, 024, 028, 040 (original set); 102–105 (monthly price/risk signals); 110–118 (slow-moving additions); 019, 035, 039, 043, 052, 055 (Alpha101 adaptations stretched to monthly windows). Every name is produced by `build_features`. `dist_52w_high`, `log_ret_skip1m`, `WQ_Alpha_201/202` and four structural features (`turnover_12m`, `limit_bias_60d`, `herding_dispersion`, `amihud_illiquidity`) are commented out. |
+| `candidate_features` | Feature pool passed to `walk_forward_cv` and `generate_paper_trade_signals` (**53** names): 5 returns, 6 volatility, 10 SMA/EMA distances, 4 volume, `RSI_14`, and **27** `WQ_Alpha_*` columns: 002, 006, 007, 013, 016, 024, 028, 040 (original set); 102–105 (monthly price/risk signals); 110–118 (slow-moving additions); 019, 035, 039, 043, 052, 055 (Alpha101 adaptations stretched to monthly windows). Every name is produced by `build_features`. `dist_52w_high`, `log_ret_skip1m`, `WQ_Alpha_201/202` and four structural features (`turnover_12m`, `limit_bias_60d`, `herding_dispersion`, `amihud_illiquidity`) are commented out. Of these, `herding_dispersion` is only a leftover name in `config.py`: `features.py` has no function that computes it. |
 | `BASE_MODEL_PARAMS` | Default XGBoost parameters: `rank:ndcg`, `device='cuda'`, `tree_method='hist'`, 150 trees, depth 3, `min_child_weight=5`, `learning_rate=0.03`, `subsample=0.7`, `colsample_bytree=0.6`, `reg_lambda=5`, `reg_alpha=1`, `lambdarank_pair_method='topk'`, `lambdarank_num_pair_per_sample=20`, `ndcg_exp_gain=False`, `random_state=42`. |
 | `FEATURE_GROUPS` | `{group: [features]}` for `returns`, `volatility`, `moving_average`, `volume`, `rsi`, `wq_features` (the 27 alphas). Together the groups cover exactly the features in `candidate_features`. The `price_structure` group is commented out. Correlation pruning only compares features **within** a group; any column outside every group (for example `GP_Alpha_*`) is a singleton and is never pruned. |
 | `ALL_GROUP_NAMES` | `list(FEATURE_GROUPS)`. |
@@ -62,7 +62,9 @@ Constants plus one helper. Imported by `models.py`, `inference.py` and `kernel.p
 
 ## `data_collect.py`
 
-Builds the ticker universe and keeps `market_data.parquet` and `vnindex_data.parquet` current through `vnstock`. Running the file as a script (`python src/data_collect.py`) updates both files from `2016-01-01`; this is what `daily_update.yml` runs. It also writes `data_collect.log`.
+Builds the ticker universe and keeps `market_data.parquet` and `vnindex_data.parquet` current through `vnstock`. Running the file as a script (`python src/data_collect.py`) updates both files from `2016-01-01`; this is what `daily_update.yml` runs. The script requires `HF_TOKEN`: it first pulls both parquet files from the Hugging Face dataset (`HF_DATA_REPO`, default `PhongHPham/vn_cross_sectional_ranking_data_storage`), updates them, pushes only the files whose sha256 changed, and writes `changed=true/false` to `$GITHUB_OUTPUT` so the workflow can skip the Kaggle run. A missing file on HF (`EntryNotFoundError`) starts from scratch; any other download error aborts, so a transient failure cannot overwrite the full history. It also writes `data_collect.log`.
+
+Helpers: `_file_hash(path)` (sha256 or `None`), `pull_from_hf(filename)`, `push_to_hf(filename)`.
 
 - **`clean_symbols(symbol_list)`**: Strips, de-duplicates and sorts ticker strings, dropping nulls.
 - **`get_tags(fetching=False)`**: Returns a hard-coded list of about 300 tickers. With `fetching=True` returns the live `VNALL` index members from `vnstock.Reference`.
@@ -244,14 +246,14 @@ The notebook `notebooks/Significance Test for Ranking Models.ipynb` shows the in
 
 ## `inference.py`
 
-### `generate_paper_trade_signals(df, current_portfolio, features, use_mega=False, model=None, buy_n=30, trend_filter_col="dist_SMA_100", trend_filter_threshold=1.0, target_col="target_quintile", icir_filter=False, icir_threshold=0.02, icir_target_col="next_1m_ret", corr_prune=False, corr_threshold=0.75)`
+### `generate_paper_trade_signals(df, current_portfolio, features, use_mega=False, model=None, buy_n=30, trend_filter_col="dist_SMA_100", trend_filter_threshold=1.0, target_col="target_magnitude", icir_filter=False, icir_threshold=0.02, icir_target_col="next_1m_ret", corr_prune=False, corr_threshold=0.75, nonskip_features=None)`
 
 1. `latest_date = df["date"].max()`. Training rows are the `date < latest_date` rows from the most recent **735** trading dates that have a non-null `target_col`; inference rows are those on `latest_date`.
-2. Optional IC/IR filter and correlation pruning on the training rows only.
-3. If `model is None`, fits `xgb.XGBRanker(**BASE_MODEL_PARAMS)` on `target_col` with the `qid` column (so `df` needs `qid`) and scores the inference rows into `live_score`. `use_mega=True` raises `NotImplementedError`.
+2. Optional IC/IR filter and correlation pruning on the training rows only. `nonskip_features` are then appended to the feature list unconditionally (only when a new model is trained).
+3. If `model is None`, fits `xgb.XGBRanker(**BASE_MODEL_PARAMS)` on `target_col` with a `qid` built from `date` inside the function, and scores the inference rows into `live_score`. `use_mega=True` raises `NotImplementedError`. If a pretrained `model` (an `XGBRanker`) is passed instead, nothing is trained: its own feature names (`model.get_booster().feature_names`) replace `features`, and combining it with `icir_filter` or `corr_prune` raises `ValueError`, as does a model that has no feature names.
 4. Ranks today's stocks (1 = best). Held symbols stay in `hold_list` while ranked within `buy_n`, otherwise go to `sell_list`; held symbols absent from today's data go to `not_in_universe_list`. New buys come from the top `buy_n`, optionally gated by `trend_filter_col > trend_filter_threshold` (pass `trend_filter_col=None` to disable, as production does).
 
-Returns `(buy_list, hold_list, sell_list, not_in_universe_list, ranked_today)`; `ranked_today` has `Symbol`, `live_score`, `rank`. Note the defaults (`buy_n=30`, trend filter on, `target_quintile`) differ from what production passes (`buy_n=20`, no trend filter, `target_magnitude`).
+Returns `(buy_list, hold_list, sell_list, not_in_universe_list, ranked_today)`; `ranked_today` has `Symbol`, `live_score`, `rank`. Note the defaults (`buy_n=30`, trend filter on via `dist_SMA_100`) differ from what production passes (`buy_n=20`, `trend_filter_col=None`, `corr_prune=True`); the default `target_col` is already `target_magnitude`, the same as production.
 
 ### `get_actionable_portfolio_lists(df, current_portfolio, features, **kwargs)`
 
@@ -284,9 +286,10 @@ It performs no model work; it trusts `kernel.py` to have applied P1 and Top-K al
 
 ## `kaggle_kernel/kernel.py`
 
-The production entry point, pushed to Kaggle by `precompute_model.yml` (`kernel-metadata.json`: id `phmhuyphongp/precompute-vn`, script kernel, GPU and internet on, private). `GH_PAT` and `HF_TOKEN` are injected by the workflow with `sed`, then restored.
+The production entry point, pushed to Kaggle by `precompute_model.yml` (`kernel-metadata.json`: id `phmhuyphongp/precompute-vn`, script kernel, GPU and internet on, private). The file ships with the placeholders `__HF_TOKEN__` and `__GH_PAT__`; `precompute_model.yml` substitutes the `HF_TOKEN` and `GH_PAT` GitHub secrets into them (and fails if a placeholder is missing or a secret is empty) just before `kaggle kernels push`. Never commit the file with real tokens.
 
-1. Clone `main` (source) and `data-storage` (data) with `GH_PAT`; copy `market_data.parquet` into `repo/data/`; `pip install -r requirements-dev.txt`.
+0. Guard: if either value still starts with the placeholder prefix, exit with "Secrets were not injected by the workflow."
+1. Clone `main` (source) using `GH_PAT`, then reset the remote URL so the token is not stored in the clone's git config; download `market_data.parquet` from the Hugging Face dataset into `repo/data/`; `pip install -r requirements-dev.txt`.
 2. Load the data, keep `config.usedSymbols`, drop 2018-01-23 and 2018-01-24 (days where most stocks are missing).
 3. Build features twice with `adtv_limit=2_500_000`: with targets (training) and with `generate_target=False` (keeps today).
 4. Evaluate P1 on the latest date from the second frame: `regime_bucket_monthly == "Q1"` and `market1m_ema21 - market3m_ema63 < 0`.

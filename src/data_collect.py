@@ -6,7 +6,11 @@ import numpy as np
 import os
 import re
 import time
+import hashlib
 import logging
+
+from huggingface_hub import HfApi, hf_hub_download
+from huggingface_hub.utils import EntryNotFoundError
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -18,6 +22,54 @@ logging.basicConfig(
     ],
 )
 log = logging.getLogger(__name__)
+
+
+# ── Hugging Face storage ──────────────────────────────────────────────────────
+HF_REPO_ID = os.environ.get("HF_DATA_REPO", "PhongHPham/vn_cross_sectional_ranking_data_storage")
+HF_TOKEN = os.environ.get("HF_TOKEN")
+
+
+def _file_hash(path: str) -> str | None:
+    if not os.path.exists(path):
+        return None
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def pull_from_hf(filename: str) -> None:
+    """
+    Downloads `filename` from the HF dataset repo into the working directory.
+
+    Only a genuinely missing file (first run) is treated as "start fresh".
+    Any other error (network, auth, rate limit) is re-raised: continuing from
+    an empty local file would rebuild a partial history and then overwrite the
+    full dataset on HF at upload time.
+    """
+    try:
+        hf_hub_download(
+            repo_id=HF_REPO_ID,
+            filename=filename,
+            repo_type="dataset",
+            token=HF_TOKEN,
+            local_dir=".",
+        )
+        log.info("⬇️  Pulled %s from HF (%s)", filename, HF_REPO_ID)
+    except EntryNotFoundError:
+        log.warning("%s not found on HF — starting from scratch.", filename)
+
+
+def push_to_hf(filename: str) -> None:
+    HfApi(token=HF_TOKEN).upload_file(
+        path_or_fileobj=filename,
+        path_in_repo=filename,
+        repo_id=HF_REPO_ID,
+        repo_type="dataset",
+        commit_message=f"data: automated market update {pd.Timestamp.today():%Y-%m-%d}",
+    )
+    log.info("⬆️  Pushed %s to HF (%s)", filename, HF_REPO_ID)
 
 
 # ── Symbols ───────────────────────────────────────────────────────────────────
@@ -365,9 +417,16 @@ if __name__ == "__main__":
     START_DATE     = "2016-01-01"
 
     log.info("🤖 Starting data collection…")
+    if not HF_TOKEN:
+        raise SystemExit("HF_TOKEN is not set — cannot read/write the HF dataset.")
+
+    # Existing history lives on Hugging Face. Pull it first so update_market_data()
+    # only fetches the missing days and merges into it.
+    pull_from_hf(MARKET_PATH)
+    pull_from_hf(VNINDEX_PATH)
+    hash_before = {p: _file_hash(p) for p in (MARKET_PATH, VNINDEX_PATH)}
+
     symbols = get_tags()
-    # Symbol list is derived from the unique tickers already in the parquet,
-    # keeping the fetch in sync with stored data without manual hardcoding.
     update_market_data(
         file_path=MARKET_PATH,
         symbols=symbols,
@@ -380,4 +439,17 @@ if __name__ == "__main__":
         file_path=VNINDEX_PATH,
     )
 
-    log.info("✅ Done. Market data → %s | VNINDEX → %s", MARKET_PATH, VNINDEX_PATH)
+    # Upload only the files that actually changed.
+    changed = False
+    for p in (MARKET_PATH, VNINDEX_PATH):
+        if _file_hash(p) is not None and _file_hash(p) != hash_before[p]:
+            push_to_hf(p)
+            changed = True
+
+    # Tell the workflow whether to trigger precompute_model.yml.
+    gh_output = os.environ.get("GITHUB_OUTPUT")
+    if gh_output:
+        with open(gh_output, "a") as f:
+            f.write(f"changed={'true' if changed else 'false'}\n")
+
+    log.info("✅ Done (changed=%s). Market data → %s | VNINDEX → %s", changed, MARKET_PATH, VNINDEX_PATH)

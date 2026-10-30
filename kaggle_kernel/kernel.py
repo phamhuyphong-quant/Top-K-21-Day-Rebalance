@@ -2,15 +2,24 @@ import os, sys, random, numpy as np
 
 random.seed(42)
 np.random.seed(42)
-# ── 1. Clone main branch (source code) ───────────────────────────────────────
-GH_PAT = os.environ.get('GH_PAT') or os.environ.get('GITHUB_TOKEN', '')
-os.system(f"git clone --depth 1 --branch main https://{GH_PAT}@github.com/phamhuyphong-quant/cross_sectional_rank_vn.git /kaggle/working/repo")
-sys.path.append('/kaggle/working/repo')
+# ── 0. Secrets ─────────
+HF_TOKEN = "__HF_TOKEN__"
+GH_PAT = "__GH_PAT__"
+if HF_TOKEN.startswith("__HF_" + "TOKEN") or GH_PAT.startswith("__GH_" + "PAT"):
+    raise SystemExit("Secrets were not injected by the workflow.")
+HF_DATA_REPO = "PhongHPham/vn_cross_sectional_ranking_data_storage"
 
-# ── 2. Pull market_data.parquet from data-storage branch ─────────────────────
-os.system(f"git clone --depth 1 --branch data-storage https://{GH_PAT}@github.com/phamhuyphong-quant/cross_sectional_rank_vn.git /kaggle/working/data-storage")
+# ── 1. Clone main branch (source code) ───────────────────────────────────────
+os.system(f"git clone -q --depth 1 --branch main https://{GH_PAT}@github.com/phamhuyphong-quant/cross_sectional_rank_vn.git /kaggle/working/repo")
+os.system("git -C /kaggle/working/repo remote set-url origin https://github.com/phamhuyphong-quant/cross_sectional_rank_vn.git")
+sys.path.append('/kaggle/working/repo')
+# ── 2. Pull market_data.parquet from the Hugging Face dataset ────────────────
+os.system("pip install -q huggingface_hub")
+from huggingface_hub import hf_hub_download
 os.makedirs('/kaggle/working/repo/data', exist_ok=True)
-os.system("cp /kaggle/working/data-storage/market_data.parquet /kaggle/working/repo/data/market_data.parquet")
+hf_hub_download(repo_id=HF_DATA_REPO, filename="market_data.parquet",
+                repo_type="dataset", token=HF_TOKEN or None,
+                local_dir='/kaggle/working/repo/data')
 
 # ── 3. Install dependencies ───────────────────────────────────────────────────
 os.system("pip install -q -r /kaggle/working/repo/requirements-dev.txt")
@@ -114,13 +123,12 @@ today_signals.to_parquet('/kaggle/working/repo/data/pretrained/today_signals.par
 
 from huggingface_hub import HfApi
 
-HF_TOKEN = os.environ.get('HF_TOKEN', '')
 api = HfApi(token=HF_TOKEN)
 
 api.upload_file(
     path_or_fileobj='/kaggle/working/repo/data/pretrained/today_signals.parquet',
     path_in_repo='today_signals.parquet',
-    repo_id="PhongHPham/vn_cross_sectional_ranking_data_storage",
+    repo_id=HF_DATA_REPO,
     repo_type="dataset",
 )
 print("✅ Uploaded today_signals.parquet to Hugging Face")

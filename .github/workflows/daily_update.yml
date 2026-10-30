@@ -12,14 +12,14 @@ jobs:
   update-data:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
       actions: write   # needed to dispatch precompute_model.yml
 
     steps:
-      - name: 📥 Checkout data_storage branch
+      - name: 📥 Checkout source code from main
         uses: actions/checkout@v4
         with:
-          ref: data-storage
+          ref: main
 
       - name: 🐍 Set up Python
         uses: actions/setup-python@v5
@@ -27,34 +27,18 @@ jobs:
           python-version: '3.11'
 
       - name: 📦 Install dependencies
-        run: pip install vnstock pandas pyarrow --extra-index-url https://vnstocks.com/api/simple
+        run: pip install vnstock pandas pyarrow huggingface_hub --extra-index-url https://vnstocks.com/api/simple
 
-      - name: 📥 Checkout source code from main
-        uses: actions/checkout@v4
-        with:
-          ref: main
-          path: main_src
-
+      # Pulls existing parquet from the HF dataset, fetches new days, uploads back
+      # to HF if anything changed, and sets outputs.changed for the next step.
       - name: 🚀 Run data collection
-        run: python main_src/src/data_collect.py
-
-      - name: 💾 Commit and push if data changed
-        id: commit
-        run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          git add market_data.parquet vnindex_data.parquet
-          if git diff --cached --quiet; then
-            echo "No changes"
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          else
-            git commit -m "data: automated market update $(date +'%Y-%m-%d')"
-            git push origin data-storage
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          fi
+        id: collect
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: python src/data_collect.py
 
       - name: 🧠 Trigger precompute model (only if data changed)
-        if: steps.commit.outputs.changed == 'true'
+        if: steps.collect.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run precompute_model.yml --repo "${{ github.repository }}" --ref main

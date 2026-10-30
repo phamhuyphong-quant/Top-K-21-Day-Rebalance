@@ -1,68 +1,67 @@
-  name: Precompute Model Artifacts
+name: Precompute Model Artifacts
 
-  on:
-    workflow_dispatch:
+on:
+  workflow_dispatch:
 
-  jobs:
-    precompute:
-      runs-on: ubuntu-latest
-      permissions:
-        contents: write
-      steps:
-        - name: Checkout main branch
-          uses: actions/checkout@v4
-          with:
-            ref: main
+jobs:
+  precompute:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout main branch
+        uses: actions/checkout@v4
+        with:
+          ref: main
 
-        - name: Set up Python
-          uses: actions/setup-python@v5
-          with:
-            python-version: '3.11'
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-        - name: Install Kaggle CLI and configure credentials
-          env:
-            KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
-            KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
-          run: |
-            pip install -U kaggle kagglesdk
-            mkdir -p ~/.kaggle
-            echo "{\"username\":\"${KAGGLE_USERNAME}\",\"key\":\"${KAGGLE_KEY}\"}" > ~/.kaggle/kaggle.json
-            chmod 600 ~/.kaggle/kaggle.json
+      - name: Install Kaggle CLI and configure credentials
+        env:
+          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+        run: |
+          pip install -U kaggle kagglesdk
+          mkdir -p ~/.kaggle
+          echo "{\"username\":\"${KAGGLE_USERNAME}\",\"key\":\"${KAGGLE_KEY}\"}" > ~/.kaggle/kaggle.json
+          chmod 600 ~/.kaggle/kaggle.json
+      - name: Inject secrets into kernel.py
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          python - <<'EOF'
+          import os
+          p = "kaggle_kernel/kernel.py"
+          s = open(p).read()
+          for ph, env in [("__HF_TOKEN__", "HF_TOKEN"), ("__GH_PAT__", "GH_PAT")]:
+              assert ph in s, f"placeholder {ph} missing"
+              assert os.environ[env], f"{env} secret is empty"
+              s = s.replace(ph, os.environ[env])
+          open(p, "w").write(s)
+          EOF
+      - name: Push kernel to Kaggle
+        run: kaggle kernels push -p kaggle_kernel/
 
-        - name: Inject GH_PAT and push kernel to Kaggle
-          env:
-            KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
-            KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
-            GH_PAT: ${{ secrets.GH_PAT }}
-            HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          run: |
-            cp kaggle_kernel/kernel.py kaggle_kernel/kernel.py.bak
-            sed -i "s|GH_PAT = os.environ.get.*|GH_PAT = '${GH_PAT}'|" kaggle_kernel/kernel.py
-            sed -i "s|HF_TOKEN = os.environ.get.*|HF_TOKEN = '${HF_TOKEN}'|" kaggle_kernel/kernel.py
-            echo "--- Injected kernel.py (line 6) ---"
-            sed -n '6p' kaggle_kernel/kernel.py
-            kaggle kernels push -p kaggle_kernel/
-            mv kaggle_kernel/kernel.py.bak kaggle_kernel/kernel.py
-
-        - name: Wait for Kaggle kernel to complete
-          env:
-            KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
-            KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
-          run: |
-            KERNEL="phmhuyphongp/precompute-vn"
-            echo "Waiting for kernel: $KERNEL"
-            sleep 30
-            for i in $(seq 1 60); do
-              RAW=$(kaggle kernels status $KERNEL 2>&1)
-              echo "[$i/60] Raw output: $RAW"
-              if echo "$RAW" | grep -q "COMPLETE"; then
-                echo "Kernel completed successfully!"
-                exit 0
-              fi
-              if echo "$RAW" | grep -q "ERROR\|CANCEL"; then
-                echo "Kernel failed!"
-                exit 1
-              fi
-              sleep 60
-            done
-            echo "Timed out after 60 minutes"; exit 1
+      - name: Wait for Kaggle kernel to complete
+        run: |
+          KERNEL="phmhuyphongp/precompute-vn"
+          echo "Waiting for kernel: $KERNEL"
+          sleep 30
+          for i in $(seq 1 60); do
+            RAW=$(kaggle kernels status $KERNEL 2>&1)
+            echo "[$i/60] Raw output: $RAW"
+            if echo "$RAW" | grep -q "COMPLETE"; then
+              echo "Kernel completed successfully!"
+              exit 0
+            fi
+            if echo "$RAW" | grep -q "ERROR\|CANCEL"; then
+              echo "Kernel failed!"
+              exit 1
+            fi
+            sleep 60
+          done
+          echo "Timed out after 60 minutes"; exit 1

@@ -48,7 +48,7 @@ pip install -r requirements-dev.txt     # full toolkit (torch, gplearn, statsmod
 pip install -r requirements.txt         # Streamlit page only
 ```
 
-`vnstock` comes from `https://vnstocks.com/api/simple` (set in `requirements-dev.txt`). `BASE_MODEL_PARAMS` uses `device='cuda'`; change it to `'cpu'` without a GPU. `gplearn` is only imported by `src/models.py` (and `src/alpha_mining.py` helpers) for the discouraged GP path.
+`vnstock` comes from `https://vnstocks.com/api/simple` (set in `requirements-dev.txt`). `BASE_MODEL_PARAMS` uses `device='cuda'`; change it to `'cpu'` without a GPU. `gplearn` is only *used* by the discouraged GP path, but `src/models.py` imports it (and `torch`) at module level, and `src/inference.py` imports from `src/models.py`. So the production signal path still needs `gplearn` and `torch` installed, even though it never runs GP.
 
 ## Pipeline walkthrough
 
@@ -189,11 +189,11 @@ The workflows are kept for documentation. They reference a `data-storage` branch
 
 | Workflow | Trigger | What it does in the private repo |
 |---|---|---|
-| `daily_update.yml` | Manual | Updates market data on the `data-storage` branch, then triggers the next workflow |
-| `precompute_model.yml` | Manual or after data update | Pushes `kernel.py` to Kaggle and waits for it to finish |
-| `keep_alive.yml` | Every 6 hours | Keeps the Streamlit app awake |
+| `daily_update.yml` | Manual | Pull data from the Hugging Face dataset, update it, push changes back, then trigger the next workflow only if something changed |
+| `precompute_model.yml` | Manual or after data update | Push `kernel.py` to Kaggle and wait for it to finish |
+| `keep_alive.yml` | Every 6 hours | Keep the Streamlit app awake |
 
-Secrets used there: `KAGGLE_USERNAME`, `KAGGLE_KEY`, `GH_PAT`, `HF_TOKEN`.
+GitHub Actions secrets: `KAGGLE_USERNAME`, `KAGGLE_KEY`, `HF_TOKEN` (write-scoped), `GH_PAT` (used by the kernel to clone the repo). Market data is stored in the Hugging Face dataset `PhongHPham/vn_cross_sectional_ranking_data_storage`, not in the repo. `precompute_model.yml` replaces the `__HF_TOKEN__` and `__GH_PAT__` placeholders in `kaggle_kernel/kernel.py` with these secrets before pushing it to Kaggle; the kernel aborts with "Secrets were not injected" if a placeholder is still present. Never commit `kernel.py` with real tokens filled in.
 
 ## Research background
 
