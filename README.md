@@ -193,7 +193,7 @@ The workflows are kept for documentation. They reference a `data-storage` branch
 | `precompute_model.yml` | Manual or after data update | Push `kernel.py` to Kaggle and wait for it to finish |
 | `keep_alive.yml` | Every 6 hours | Keep the Streamlit app awake |
 
-GitHub Actions secrets: `KAGGLE_USERNAME`, `KAGGLE_KEY`, `HF_TOKEN` (write-scoped), `GH_PAT` (used by the kernel to clone the repo). Market data is stored in the Hugging Face dataset `PhongHPham/vn_cross_sectional_ranking_data_storage`, not in the repo. `precompute_model.yml` replaces the `__HF_TOKEN__` and `__GH_PAT__` placeholders in `kaggle_kernel/kernel.py` with these secrets before pushing it to Kaggle; the kernel aborts with "Secrets were not injected" if a placeholder is still present. Never commit `kernel.py` with real tokens filled in.
+GitHub Actions secrets: `KAGGLE_USERNAME`, `KAGGLE_KEY`, `HF_TOKEN` (write-scoped), `GH_PAT` (used by the kernel to clone the repo). Market data is stored in the Hugging Face dataset `PhongHPham/vn_cross_sectional_ranking_data_storage`, not in the repo. `precompute_model.yml` replaces the `__HF_TOKEN__` and `__GH_PAT__` placeholders in `kaggle_kernel/kernel.py` with these secrets before pushing it to Kaggle; the kernel aborts with "Secrets were not injected" if a placeholder is still present. Never commit `kernel.py` with real tokens filled in. The workflow pins the Kaggle CLI (`kaggle==1.7.4.5`) and installs `six` explicitly, because newer unpinned releases failed at import on the GitHub runner.
 
 ## Research background
 

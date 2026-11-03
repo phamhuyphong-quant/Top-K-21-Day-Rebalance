@@ -118,17 +118,28 @@ else:
     today_signals['filter_active'] = False
 
 # ── 6. Save + upload today's P1 signals to Hugging Face ──────────────────────
-os.makedirs('/kaggle/working/repo/data/pretrained', exist_ok=True)
-today_signals.to_parquet('/kaggle/working/repo/data/pretrained/today_signals.parquet', index=False)
-
+import time
 from huggingface_hub import HfApi
+
+out_path = '/kaggle/working/repo/data/pretrained/today_signals.parquet'
+os.makedirs(os.path.dirname(out_path), exist_ok=True)
+today_signals.to_parquet(out_path, index=False)
+assert os.path.isfile(out_path), f"Failed to write {out_path}"
 
 api = HfApi(token=HF_TOKEN)
 
-api.upload_file(
-    path_or_fileobj='/kaggle/working/repo/data/pretrained/today_signals.parquet',
-    path_in_repo='today_signals.parquet',
-    repo_id=HF_DATA_REPO,
-    repo_type="dataset",
-)
-print("✅ Uploaded today_signals.parquet to Hugging Face")
+for attempt in range(1, 6):
+    try:
+        api.upload_file(
+            path_or_fileobj=out_path,
+            path_in_repo='today_signals.parquet',
+            repo_id=HF_DATA_REPO,
+            repo_type="dataset",
+        )
+        print("✅ Uploaded today_signals.parquet to Hugging Face")
+        break
+    except (OSError, TimeoutError) as e:
+        print(f"Upload attempt {attempt}/5 failed: {type(e).__name__}: {e}")
+        if attempt == 5:
+            raise
+        time.sleep(10 * attempt)

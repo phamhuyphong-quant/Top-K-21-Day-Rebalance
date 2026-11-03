@@ -1,6 +1,6 @@
 # Module Reference: VN Cross-Sectional Ranking System
 
-What each module in `src/`, `config.py` and `kaggle_kernel/kernel.py` does and how the pieces connect. For setup, results and usage examples see [README.md](README.md). This file describes the code as it is now; where code and config disagree, that is called out under **Known issues**.
+What each module in `src/`, `config.py` and `kaggle_kernel/kernel.py` does and how the pieces connect. For installation and usage examples see [README.md](README.md). This file describes the code as it is now; where code and config disagree, that is called out under **Known issues**.
 
 ## Contents
 
@@ -286,7 +286,7 @@ It performs no model work; it trusts `kernel.py` to have applied P1 and Top-K al
 
 ## `kaggle_kernel/kernel.py`
 
-The production entry point, pushed to Kaggle by `precompute_model.yml` (`kernel-metadata.json`: id `phmhuyphongp/precompute-vn`, script kernel, GPU and internet on, private). The file ships with the placeholders `__HF_TOKEN__` and `__GH_PAT__`; `precompute_model.yml` substitutes the `HF_TOKEN` and `GH_PAT` GitHub secrets into them (and fails if a placeholder is missing or a secret is empty) just before `kaggle kernels push`. Never commit the file with real tokens.
+The production entry point, pushed to Kaggle by `precompute_model.yml` (`kernel-metadata.json`: id `phmhuyphongp/precompute-vn`, script kernel, GPU and internet on, private). The file ships with the placeholders `__HF_TOKEN__` and `__GH_PAT__`; `precompute_model.yml` substitutes the `HF_TOKEN` and `GH_PAT` GitHub secrets into them (and fails if a placeholder is missing or a secret is empty) just before `kaggle kernels push`. The workflow installs the Kaggle CLI pinned to `kaggle==1.7.4.5` together with `six`; unpinned (`pip install -U kaggle`) installs crashed on the runner with `ModuleNotFoundError: No module named 'six'`, so do not switch back to `-U` without testing. Never commit the file with real tokens.
 
 0. Guard: if either value still starts with the placeholder prefix, exit with "Secrets were not injected by the workflow."
 1. Clone `main` (source) using `GH_PAT`, then reset the remote URL so the token is not stored in the clone's git config; download `market_data.parquet` from the Hugging Face dataset into `repo/data/`; `pip install -r requirements-dev.txt`.
@@ -295,7 +295,7 @@ The production entry point, pushed to Kaggle by `precompute_model.yml` (`kernel-
 4. Evaluate P1 on the latest date from the second frame: `regime_bucket_monthly == "Q1"` and `market1m_ema21 - market3m_ema63 < 0`.
    - **Active:** write a one-row cash record (`filter_active=True`, null `rank`/`Symbol`/`live_score`).
    - **Inactive:** sort the training frame by date and assign `qid`, append today's rows with `target_magnitude = NaN`, call `generate_paper_trade_signals(buy_n=20, trend_filter_col=None, target_col="target_magnitude", icir_filter=False, corr_prune=True)`, keep the top 20.
-5. Save `today_signals.parquet` (`signal_date`, `filter_active`, and `rank`/`Symbol`/`live_score` when not in cash) and upload it to the Hugging Face dataset that `app.py` reads.
+5. Save `today_signals.parquet` (`signal_date`, `filter_active`, and `rank`/`Symbol`/`live_score` when not in cash), assert that the file exists, and upload it to the Hugging Face dataset that `app.py` reads. The upload is retried up to 5 times with increasing backoff (10s, 20s, ...) because a slow commit reply from Hugging Face can raise `httpx.ReadTimeout` even when the commit succeeded, which would otherwise crash the run and mark the Kaggle kernel as failed. If all 5 attempts fail, the error is re-raised so the run still fails loudly.
 
 Because `generate_paper_trade_signals` trains on the last 735 labelled dates, the model never sees the ~21 most recent sessions (their targets do not exist yet). The production path uses no gplearn factors.
 
