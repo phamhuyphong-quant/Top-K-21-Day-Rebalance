@@ -13,12 +13,13 @@ What each module in `src/`, `config.py` and `kaggle_kernel/kernel.py` does and h
 7. [simulation.py](#simulationpy)
 8. [evaluation.py](#evaluationpy)
 9. [significance_test.py](#significance_testpy)
-10. [inference.py](#inferencepy)
-11. [deep_combiner.py](#deep_combinerpy)
-12. [app.py](#apppy)
-13. [kaggle_kernel/kernel.py](#kaggle_kernelkernelpy)
-14. [gplearn factor mining (not recommended)](#gplearn-factor-mining-not-recommended)
-15. [Known issues](#known-issues)
+10. [tuning.py](#tuningpy)
+11. [inference.py](#inferencepy)
+12. [deep_combiner.py](#deep_combinerpy)
+13. [app.py](#apppy)
+14. [kaggle_kernel/kernel.py](#kaggle_kernelkernelpy)
+15. [gplearn factor mining (not recommended)](#gplearn-factor-mining-not-recommended)
+16. [Known issues](#known-issues)
 
 ---
 
@@ -42,6 +43,8 @@ evaluation.* / significance_test.*
 ```
 
 The gplearn path (`use_gp=True`) is an optional side branch inside `walk_forward_cv` and is **not recommended**; see [its section](#gplearn-factor-mining-not-recommended).
+
+`tuning.select_lambda()` is a second, offline side branch: it calls `walk_forward_cv`, the simulator and the significance tests to choose a hyperparameter. Nothing on the production path imports it.
 
 ---
 
@@ -244,6 +247,27 @@ The notebook `notebooks/Significance Test for Ranking Models.ipynb` shows the in
 
 ---
 
+## `tuning.py`
+
+Offline hyperparameter selection. It sits above `models.py`, `evaluation.py`, `significance_test.py` and `simulation.py` and imports all four. None of them import it, and neither `inference.py` nor `kernel.py` does, so it adds nothing to the production dependency chain.
+
+- **`ensemble_predictions(preds)`**: `preds` is a list of prediction frames over the same rows, one per seed. Returns one frame whose `pred_score` is the mean of the per-date percentile ranks across seeds, so every seed counts equally whatever its score scale. All other columns come from the first frame.
+- **`_daily_ic(df, target_col)`**: per-date Spearman correlation between `pred_score` and `target_col`.
+- **`model_metrics(df, k=10, ret_col="next_1m_ret", target_col="target_magnitude")`**: dict with `topk_avg` (mean daily top-k target), `topk_vs_univ` (top-k minus universe), `ic_mean` and `icir` (both against `target_col`). If `ret_col` is in the frame it also returns `topk_excess_ret` and `precision_at_k`, reusing the helpers from `models.py`.
+- **`simulate(df_pred, df_raw, trade_k, initial_capital, price_unit)`**: builds the engines, runs `OrderManager` with equal weights and no entry filter, and returns `sharpe`, `cagr` and `max_drawdown` from `print_performance_report` (rf 4.5%).
+- **`select_lambda(df, features, base_params, lambda_pairs, seeds=tuple(range(8)), k=10, df_raw=None, initial_capital=50_000_000, price_unit=1.0, rank_metrics=("topk_avg", "ic_mean", "icir", "topk_excess_ret"), block=21, alpha=0.05, save_prefix=None)`**: tunes `lambdarank_num_pair_per_sample`.
+  1. For every value in `lambda_pairs` and every seed, copies `base_params`, sets `lambdarank_num_pair_per_sample` and `random_state`, and runs `walk_forward_cv` (XGBoost LambdaRank, expanding window, `initial_train_dates=756`, `train_percent=0.8`, default `gap_dates=21`, `corr_prune=True`, `icir_filter=False`, `top_k=k`).
+  2. Rank-averages the seeds into one ensemble per value, then computes `model_metrics` and `simulate` on it.
+  3. Ranks the values on each metric in `rank_metrics` (higher is better) and averages the ranks into `avg_rank`. The lowest is "best". The simulation columns are reported but not part of the default ranking.
+  4. Tests the best value against every other with `compute_delta_base_vs_model` and `run_comparison(block=block)`, then applies Holm correction. A value stays on the **plateau** unless the best is significantly better (`mean_delta > 0` and `p_holm < alpha`).
+  5. `choice` is the middle of the sorted plateau (the lower middle when the count is even).
+
+  Returns a dict with `metrics`, `ranking`, `sig`, `plateau`, `choice` and `ensembles` (the per-value ensemble frames). `save_prefix` writes `<prefix>_metrics.csv` and `<prefix>_sig.csv`. `df_raw` defaults to `df`, which must then contain `close`.
+
+Notes: `lambda_pairs` must be integers (the plateau step parses the value back out of the comparison name with `int()`). The cost is `len(lambda_pairs) × len(seeds)` full walk-forward runs. The chosen value is not applied automatically; `BASE_MODEL_PARAMS` still holds 20 until you change it in `config.py`.
+
+---
+
 ## `inference.py`
 
 ### `generate_paper_trade_signals(df, current_portfolio, features, use_mega=False, model=None, buy_n=30, trend_filter_col="dist_SMA_100", trend_filter_threshold=1.0, target_col="target_magnitude", icir_filter=False, icir_threshold=0.02, icir_target_col="next_1m_ret", corr_prune=False, corr_threshold=0.75, nonskip_features=None)`
@@ -334,3 +358,5 @@ If you want learned alphas, prefer fixed, documented formulas (as in `alpha_mini
 5. **gplearn:** see the [dedicated section](#gplearn-factor-mining-not-recommended). Selection bias, a single fit at the start, in-sample optimism in early folds, and no pruning of GP columns.
 6. **Stale comments in `config.py`:** the `WQ_Alpha_006` comment says a 10-day correlation and `WQ_Alpha_028` says a 5-day one, but both code paths use 21 days; the `WQ_Alpha_103` comment calls it a value proxy, while the code documents it as a 52-week-high (momentum-type) signal. The code is authoritative.
 7. **`data_collect.py` date logic:** the "last completed trading day" roll-back is weekday-based. On Sunday it resolves to Saturday (not Friday) and Vietnamese market holidays are not considered, so some symbols may be re-fetched needlessly. One warning log in `_fetch_quote` has a format string with two placeholders but one argument, which prints a logging error instead of the message.
+8. **Tuning selects and reports on the same out-of-sample folds:** `select_lambda` picks a value from the walk-forward test predictions, and those same predictions are what you would then report. The choice is mildly optimistic. The plateau rule (middle of the statistically tied values) limits this but does not remove it. For a clean number, tune on an earlier span and report on a later one.
+9. **`tuning.py` hardcodes its setup:** the walk-forward configuration inside `select_lambda` (expanding window, 756-date initial train, 80% ratio, `corr_prune=True`) and `simulate` (equal weights, no entry filter) are fixed in the code, and `lambda_pairs` must be integers.

@@ -25,6 +25,7 @@ A modular Python toolkit for building and backtesting **Top-K cross-sectional ra
 | Simulation | Day-by-day Top-K portfolio with fees, tax, settlement lag and lot sizes | `src/simulation.py` |
 | Evaluation | IC, NDCG, precision@k, CAGR, Sharpe, Sortino, Calmar, drawdown, equity curves | `src/evaluation.py` |
 | Significance | Block bootstrap and permutation tests, Holm correction, Sharpe-difference test | `src/significance_test.py` |
+| Tuning | Seed-ensembled selection of the LambdaRank pair count, with a statistical "plateau" rule | `src/tuning.py` |
 | Live signal | Daily Top-20 ranking, Kaggle run, Streamlit page | `src/inference.py`, `kaggle_kernel/`, `src/app.py` |
 
 Every feature at date *T* uses only data up to the close of *T-1*, and all feature selection inside a fold is fitted on that fold's training window only.
@@ -154,7 +155,28 @@ sharpe_diff_block_bootstrap(history_a, history_b, block=21)
 
 Compares a base model against others and each model against its universe, using block resampling (forward returns overlap across days), Holm correction, autocorrelation diagnostics and offset-sensitivity checks.
 
-### 7. Live signal: `src/inference.py`
+### 7. Hyperparameter selection: `src/tuning.py`
+
+```python
+from src.tuning import select_lambda
+from config import candidate_features, BASE_MODEL_PARAMS
+
+res = select_lambda(
+    df_train, candidate_features, BASE_MODEL_PARAMS,
+    lambda_pairs=[10, 25, 40, 50, 75, 100], seeds=range(8), k=10,
+    initial_capital=50_000_000, price_unit=1.0, save_prefix="lambda_select",
+)
+res["plateau"], res["choice"]
+```
+
+Tunes `lambdarank_num_pair_per_sample` (the "lambda" in the names is the LambdaRank pair count, not a regularisation strength). For each candidate value it trains one XGBoost LambdaRank per seed in an expanding walk-forward, rank-averages the seeds into a single ensemble, and measures top-k average target, IC, ICIR, top-k excess return and a simulated portfolio. Candidates are ranked by their average rank across `rank_metrics`; each is then tested against the best one on the daily top-k `target_magnitude` (block permutation, Holm correction). Every value that is not significantly worse than the best forms the **plateau**, and the suggested choice is the middle of it, which favours a stable region over a lucky peak.
+
+- Cost is `len(lambda_pairs) × len(seeds)` full walk-forward runs (48 in the example), so run it offline.
+- `lambda_pairs` must be integers. The walk-forward setup (expanding window, 756-date initial train, 80% ratio, `corr_prune=True`) is fixed inside the function.
+- The result is not written back anywhere: update `BASE_MODEL_PARAMS` in `config.py` by hand if you adopt a new value.
+- Research tooling only: neither `inference.py` nor `kernel.py` imports it.
+
+### 8. Live signal: `src/inference.py`
 
 ```python
 from src.inference import generate_paper_trade_signals
@@ -176,7 +198,7 @@ Retrains an XGBoost ranker on the latest 735 labelled trading dates and ranks to
 ```
 config.py
 src/            data_collect · features · alpha_mining · models · simulation
-                evaluation · significance_test · inference · deep_combiner · app
+                evaluation · significance_test · tuning · inference · deep_combiner · app
 kaggle_kernel/  daily production run
 notebooks/      significance-test notebook; research notebooks and paper in "NTH RESEARCH/"
 .github/workflows/  daily_update · precompute_model · keep_alive
