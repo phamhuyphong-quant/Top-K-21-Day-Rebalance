@@ -2,7 +2,7 @@
 
 A modular Python toolkit for building and backtesting **Top-K cross-sectional ranking strategies** on Vietnamese stocks. Plug in a ranking model and an optional market-level entry filter, run a walk-forward evaluation, simulate the portfolio with Vietnam-specific trading rules, and test whether differences are statistically meaningful. The same pipeline can publish a daily paper-trading signal.
 
-[![Live App](https://img.shields.io/badge/Live%20App-Streamlit-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white)](https://cross-sectional-ranking-vn.streamlit.app/)
+[![Live App](https://img.shields.io/badge/Live%20App-Cloudflare%20Pages-F38020?style=for-the-badge&logo=cloudflare&logoColor=white)](https://cross-sectional-rank-vn.pages.dev/)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![License: GPL v3.0](https://img.shields.io/badge/License-GPLv3-blue.svg?style=for-the-badge)](https://www.gnu.org/licenses/gpl-3.0)
 
@@ -26,7 +26,7 @@ A modular Python toolkit for building and backtesting **Top-K cross-sectional ra
 | Evaluation | IC, NDCG, precision@k, CAGR, Sharpe, Sortino, Calmar, drawdown, equity curves | `src/evaluation.py` |
 | Significance | Block bootstrap and permutation tests, Holm correction, Sharpe-difference test | `src/significance_test.py` |
 | Tuning | Seed-ensembled selection of the LambdaRank pair count, with a statistical "plateau" rule | `src/tuning.py` |
-| Live signal | Daily Top-20 ranking, Kaggle run, Streamlit page | `src/inference.py`, `kaggle_kernel/`, `src/app.py` |
+| Live signal | Daily Top-20 ranking from a Kaggle run, shown on a small website | `src/inference.py`, `kaggle_kernel/` |
 
 Every feature at date *T* uses only data up to the close of *T-1*, and all feature selection inside a fold is fitted on that fold's training window only.
 
@@ -46,7 +46,6 @@ Every feature at date *T* uses only data up to the close of *T-1*, and all featu
 git clone https://github.com/phamhuyphong-quant/Top-K-21-Day-Rebalance.git
 cd Top-K-21-Day-Rebalance
 pip install -r requirements-dev.txt     # full toolkit (torch, gplearn, statsmodels, ...)
-pip install -r requirements.txt         # Streamlit page only
 ```
 
 `vnstock` comes from `https://vnstocks.com/api/simple` (set in `requirements-dev.txt`). `BASE_MODEL_PARAMS` uses `device='cuda'`; change it to `'cpu'` without a GPU. `gplearn` is only *used* by the discouraged GP path, but `src/models.py` imports it (and `torch`) at module level, and `src/inference.py` imports from `src/models.py`. So the production signal path still needs `gplearn` and `torch` installed, even though it never runs GP.
@@ -187,7 +186,13 @@ buy, hold, sell, gone, ranked = generate_paper_trade_signals(
 )
 ```
 
-Retrains an XGBoost ranker on the latest 735 labelled trading dates and ranks today's stocks. `kaggle_kernel/kernel.py` wraps this daily with the entry-filter check and uploads `today_signals.parquet` to Hugging Face; `streamlit run src/app.py` displays it. The live path does not use gplearn.
+Retrains an XGBoost ranker on the latest 735 labelled trading dates and ranks today's stocks. `kaggle_kernel/kernel.py` wraps this daily with the entry-filter check and uploads `today_signals.parquet` to Hugging Face; a small website (section 9) displays it. The live path does not use gplearn.
+
+### 9. Website
+
+The daily signal is shown on a small public page hosted on Cloudflare Pages: [cross-sectional-rank-vn.pages.dev](https://cross-sectional-rank-vn.pages.dev/). Its source is deployed from the private companion repository and is not part of this snapshot. In short, a serverless function reads `today_signals.parquet` from a private Hugging Face dataset (the access token is stored as a Cloudflare secret, never in the browser), caches it for about an hour, and renders either a "hold all cash" notice or the Top-20 table.
+
+To run your own, any static or serverless host works. The page needs only the columns `Symbol`, `rank`, `signal_date` and `filter_active` from `today_signals.parquet`.
 
 ## Configuration: `config.py`
 
@@ -198,10 +203,10 @@ Retrains an XGBoost ranker on the latest 735 labelled trading dates and ranks to
 ```
 config.py
 src/            data_collect · features · alpha_mining · models · simulation
-                evaluation · significance_test · tuning · inference · deep_combiner · app
+                evaluation · significance_test · tuning · inference · deep_combiner
 kaggle_kernel/  daily production run
 notebooks/      significance-test notebook; research notebooks and paper in "NTH RESEARCH/"
-.github/workflows/  daily_update · precompute_model · keep_alive
+.github/workflows/  daily_update · precompute_model
 MODULES.md      per-module function reference
 ```
 
@@ -213,9 +218,8 @@ The workflows are kept for documentation. They reference a `data-storage` branch
 |---|---|---|
 | `daily_update.yml` | Manual | Pull data from the Hugging Face dataset, update it, push changes back, then trigger the next workflow only if something changed |
 | `precompute_model.yml` | Manual or after data update | Push `kernel.py` to Kaggle and wait for it to finish |
-| `keep_alive.yml` | Every 6 hours | Keep the Streamlit app awake |
 
-GitHub Actions secrets: `KAGGLE_USERNAME`, `KAGGLE_KEY`, `HF_TOKEN` (write-scoped), `GH_PAT` (used by the kernel to clone the repo). Market data is stored in the Hugging Face dataset `PhongHPham/vn_cross_sectional_ranking_data_storage`, not in the repo. `precompute_model.yml` replaces the `__HF_TOKEN__` and `__GH_PAT__` placeholders in `kaggle_kernel/kernel.py` with these secrets before pushing it to Kaggle; the kernel aborts with "Secrets were not injected" if a placeholder is still present. Never commit `kernel.py` with real tokens filled in. The workflow pins the Kaggle CLI (`kaggle==1.7.4.5`) and installs `six` explicitly, because newer unpinned releases failed at import on the GitHub runner.
+GitHub Actions secrets: `KAGGLE_USERNAME`, `KAGGLE_KEY`, `HF_TOKEN` (write-scoped), `GH_PAT` (used by the kernel to clone the repo). Market data is stored in a private Hugging Face dataset, not in the repo. `precompute_model.yml` replaces the `__HF_TOKEN__` and `__GH_PAT__` placeholders in `kaggle_kernel/kernel.py` with these secrets before pushing it to Kaggle; the kernel aborts with "Secrets were not injected" if a placeholder is still present. Never commit `kernel.py` with real tokens filled in. The workflow pins the Kaggle CLI (`kaggle==1.7.4.5`) and installs `six` explicitly, because newer unpinned releases failed at import on the GitHub runner.
 
 ## Research background
 
@@ -223,6 +227,6 @@ The project grew out of a research paper (Vietnamese) in `notebooks/NTH RESEARCH
 
 ## Author and license
 
-**Phong Phạm Huy**: [LinkedIn](https://www.linkedin.com/in/phong-phạm-huy-b64331377) · [GitHub](https://github.com/phamhuyphong-quant)
+**Phong Phạm Huy**: [LinkedIn](https://www.linkedin.com/in/phong-ph%E1%BA%A1m-huy-b64331377) · [GitHub](https://github.com/phamhuyphong-quant)
 
 GPL v3.0, see [LICENSE](LICENSE). Built on `vnstock`, XGBoost, scikit-learn, PyTorch, AlphaForge (arXiv:2406.18394) and Kakushadze's *101 Formulaic Alphas*. `gplearn` (GPL v3) is only used by the discouraged GP path.

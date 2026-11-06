@@ -1,6 +1,6 @@
 # Module Reference: VN Cross-Sectional Ranking System
 
-What each module in `src/`, `config.py` and `kaggle_kernel/kernel.py` does and how the pieces connect. For installation and usage examples see [README.md](README.md). This file describes the code as it is now; where code and config disagree, that is called out under **Known issues**.
+What each module in `src/`, `config.py` and `kaggle_kernel/kernel.py` does and how the pieces connect. For installation and usage examples see [README.md](README.md). This is the public snapshot: the live pipeline (daily data update, Kaggle run) and the website run from a private companion repository, so the parts that depend on it are described here but cannot be run from this repo. This file describes the code as it is now; where code and config disagree, that is called out under **Known issues**.
 
 ## Contents
 
@@ -16,7 +16,7 @@ What each module in `src/`, `config.py` and `kaggle_kernel/kernel.py` does and h
 10. [tuning.py](#tuningpy)
 11. [inference.py](#inferencepy)
 12. [deep_combiner.py](#deep_combinerpy)
-13. [app.py](#apppy)
+13. [Website](#website)
 14. [kaggle_kernel/kernel.py](#kaggle_kernelkernelpy)
 15. [gplearn factor mining (not recommended)](#gplearn-factor-mining-not-recommended)
 16. [Known issues](#known-issues)
@@ -38,7 +38,7 @@ features.build_features()
 models.walk_forward_cv()        inference.generate_paper_trade_signals()
    │ pred_score per test fold          │ (called from kaggle_kernel/kernel.py)
    ▼                                   ▼
-simulation.OrderManager         today_signals.parquet ─► Hugging Face ─► app.py
+simulation.OrderManager         today_signals.parquet ─► Hugging Face ─► website
 evaluation.* / significance_test.*
 ```
 
@@ -65,7 +65,7 @@ Constants plus one helper. Imported by `models.py`, `inference.py` and `kernel.p
 
 ## `data_collect.py`
 
-Builds the ticker universe and keeps `market_data.parquet` and `vnindex_data.parquet` current through `vnstock`. Running the file as a script (`python src/data_collect.py`) updates both files from `2016-01-01`; this is what `daily_update.yml` runs. The script requires `HF_TOKEN`: it first pulls both parquet files from the Hugging Face dataset (`HF_DATA_REPO`, default `PhongHPham/vn_cross_sectional_ranking_data_storage`), updates them, pushes only the files whose sha256 changed, and writes `changed=true/false` to `$GITHUB_OUTPUT` so the workflow can skip the Kaggle run. A missing file on HF (`EntryNotFoundError`) starts from scratch; any other download error aborts, so a transient failure cannot overwrite the full history. It also writes `data_collect.log`.
+Builds the ticker universe and keeps `market_data.parquet` and `vnindex_data.parquet` current through `vnstock`. Running the file as a script (`python src/data_collect.py`) updates both files from `2016-01-01`; this is what `daily_update.yml` runs. The script requires `HF_TOKEN`: it first pulls both parquet files from the Hugging Face dataset (set by `HF_DATA_REPO`; the default is the author's private dataset), updates them, pushes only the files whose sha256 changed, and writes `changed=true/false` to `$GITHUB_OUTPUT` so the workflow can skip the Kaggle run. A missing file on HF (`EntryNotFoundError`) starts from scratch; any other download error aborts, so a transient failure cannot overwrite the full history. It also writes `data_collect.log`.
 
 Helpers: `_file_hash(path)` (sha256 or `None`), `pull_from_hf(filename)`, `push_to_hf(filename)`.
 
@@ -296,30 +296,31 @@ Wrapper returning a dict with `BUY`, `HOLD`, `SELL`, `NOT_IN_UNIVERSE`, `Ranking
 
 ---
 
-## `app.py`
+## Website
 
-A deliberately small Streamlit page, written in English.
+The page that shows the daily signal is not part of this snapshot. It is a small Cloudflare Pages Function deployed from the private companion repository. It replaced an earlier Streamlit page, so no keep-alive job is needed any more.
 
-- **`_today_vn()`**: Today's date in Vietnam time, used as a cache key so the cache refreshes after local midnight.
-- **`load_today_signals(_date_key)`**: Downloads `today_signals.parquet` from the Hugging Face dataset `PhongHPham/vn_cross_sectional_ranking_data_storage` (1-hour `st.cache_data` TTL), using `st.secrets["HF_TOKEN"]` if present. Shows a warning and returns `None` on failure.
-- **Page:** browser title "Scientific Research"; the paper's title in English ("Application of a Machine Learning Ranking Model Combined with an Entry-Point Filter on the Vietnamese Stock Market") and a research-only caption; a caption with the data cutoff date (`signal_date`); then either a "Hold all cash, do not buy today / P1 filter is active" warning when `filter_active` is true, or a table of stock ticker and rank with a fixed "5%" capital allocation per stock.
+On each request the function:
+1. Serves an edge-cached copy if one exists (about 1 hour freshness).
+2. Otherwise downloads `today_signals.parquet` from the private Hugging Face dataset with an access token stored as a Cloudflare secret, parses it, and returns HTTP 502 with the Hugging Face status code if the download fails.
+3. Renders the paper title and a research-only caption, the `signal_date` cutoff, then either a "Hold all cash, do not buy today" message when `filter_active` is true, or a table of ticker, rank and a fixed "5%" allocation.
 
-It performs no model work; it trusts `kernel.py` to have applied P1 and Top-K already.
+It does no model work and trusts `kernel.py` to have applied P1 and Top-K. It reads only the columns `Symbol`, `rank`, `signal_date` and `filter_active`, so any other host can serve the same file.
 
 ---
 
 ## `kaggle_kernel/kernel.py`
 
-The production entry point, pushed to Kaggle by `precompute_model.yml` (`kernel-metadata.json`: id `phmhuyphongp/precompute-vn`, script kernel, GPU and internet on, private). The file ships with the placeholders `__HF_TOKEN__` and `__GH_PAT__`; `precompute_model.yml` substitutes the `HF_TOKEN` and `GH_PAT` GitHub secrets into them (and fails if a placeholder is missing or a secret is empty) just before `kaggle kernels push`. The workflow installs the Kaggle CLI pinned to `kaggle==1.7.4.5` together with `six`; unpinned (`pip install -U kaggle`) installs crashed on the runner with `ModuleNotFoundError: No module named 'six'`, so do not switch back to `-U` without testing. Never commit the file with real tokens.
+The production entry point, pushed to Kaggle by `precompute_model.yml` (`kernel-metadata.json`: private script kernel, GPU and internet on). The file ships with the placeholders `__HF_TOKEN__` and `__GH_PAT__`; `precompute_model.yml` substitutes the `HF_TOKEN` and `GH_PAT` GitHub secrets into them (and fails if a placeholder is missing or a secret is empty) just before `kaggle kernels push`. The workflow installs the Kaggle CLI pinned to `kaggle==1.7.4.5` together with `six`; unpinned (`pip install -U kaggle`) installs crashed on the runner with `ModuleNotFoundError: No module named 'six'`, so do not switch back to `-U` without testing. Never commit the file with real tokens.
 
 0. Guard: if either value still starts with the placeholder prefix, exit with "Secrets were not injected by the workflow."
-1. Clone `main` (source) using `GH_PAT`, then reset the remote URL so the token is not stored in the clone's git config; download `market_data.parquet` from the Hugging Face dataset into `repo/data/`; `pip install -r requirements-dev.txt`.
+1. Clone the private companion repo (source) using `GH_PAT`, then reset the remote URL so the token is not stored in the clone's git config; download `market_data.parquet` from the Hugging Face dataset into `repo/data/`; `pip install -r requirements-dev.txt`.
 2. Load the data, keep `config.usedSymbols`, drop 2018-01-23 and 2018-01-24 (days where most stocks are missing).
 3. Build features twice with `adtv_limit=2_500_000`: with targets (training) and with `generate_target=False` (keeps today).
 4. Evaluate P1 on the latest date from the second frame: `regime_bucket_monthly == "Q1"` and `market1m_ema21 - market3m_ema63 < 0`.
    - **Active:** write a one-row cash record (`filter_active=True`, null `rank`/`Symbol`/`live_score`).
    - **Inactive:** sort the training frame by date and assign `qid`, append today's rows with `target_magnitude = NaN`, call `generate_paper_trade_signals(buy_n=20, trend_filter_col=None, target_col="target_magnitude", icir_filter=False, corr_prune=True)`, keep the top 20.
-5. Save `today_signals.parquet` (`signal_date`, `filter_active`, and `rank`/`Symbol`/`live_score` when not in cash), assert that the file exists, and upload it to the Hugging Face dataset that `app.py` reads. The upload is retried up to 5 times with increasing backoff (10s, 20s, ...) because a slow commit reply from Hugging Face can raise `httpx.ReadTimeout` even when the commit succeeded, which would otherwise crash the run and mark the Kaggle kernel as failed. If all 5 attempts fail, the error is re-raised so the run still fails loudly.
+5. Save `today_signals.parquet` (`signal_date`, `filter_active`, and `rank`/`Symbol`/`live_score` when not in cash), assert that the file exists, and upload it to the Hugging Face dataset that the website reads. The upload is retried up to 5 times with increasing backoff (10s, 20s, ...) because a slow commit reply from Hugging Face can raise `httpx.ReadTimeout` even when the commit succeeded, which would otherwise crash the run and mark the Kaggle kernel as failed. If all 5 attempts fail, the error is re-raised so the run still fails loudly.
 
 Because `generate_paper_trade_signals` trains on the last 735 labelled dates, the model never sees the ~21 most recent sessions (their targets do not exist yet). The production path uses no gplearn factors.
 
