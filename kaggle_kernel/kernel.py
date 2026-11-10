@@ -2,6 +2,7 @@ import os, sys, random, numpy as np
 
 random.seed(42)
 np.random.seed(42)
+os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "120"
 # ── 0. Secrets ─────────
 HF_TOKEN = "__HF_TOKEN__"
 GH_PAT = "__GH_PAT__"
@@ -127,19 +128,28 @@ today_signals.to_parquet(out_path, index=False)
 assert os.path.isfile(out_path), f"Failed to write {out_path}"
 
 api = HfApi(token=HF_TOKEN)
+import hashlib
+
+def _sha(p): return hashlib.sha256(open(p, "rb").read()).hexdigest()
+
+def landed():
+    try:
+        p = hf_hub_download(HF_DATA_REPO, "today_signals.parquet", repo_type="dataset",
+                            token=HF_TOKEN, force_download=True, local_dir="/tmp/verify")
+        return _sha(p) == _sha(out_path)
+    except Exception:
+        return False
 
 for attempt in range(1, 6):
     try:
-        api.upload_file(
-            path_or_fileobj=out_path,
-            path_in_repo='today_signals.parquet',
-            repo_id=HF_DATA_REPO,
-            repo_type="dataset",
-        )
-        print("✅ Uploaded today_signals.parquet to Hugging Face")
-        break
-    except (OSError, TimeoutError) as e:
-        print(f"Upload attempt {attempt}/5 failed: {type(e).__name__}: {e}")
+        api.upload_file(path_or_fileobj=out_path, path_in_repo="today_signals.parquet",
+                        repo_id=HF_DATA_REPO, repo_type="dataset")
+        print("✅ Uploaded today_signals.parquet"); break
+    except Exception as e:
+        print(f"Upload attempt {attempt}/5: {type(e).__name__}: {e}")
+        time.sleep(5)
+        if landed():
+            print("✅ Upload confirmed on Hub despite error"); break
         if attempt == 5:
             raise
         time.sleep(10 * attempt)
