@@ -13,4 +13,4 @@ gplearn
 statsmodels
 torch
 
---extra-index-url https://vnstocks.com/api/simple
+--extra-index-url https://vnstocks.com/api/packages

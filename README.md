@@ -18,8 +18,8 @@ A modular Python toolkit for building and backtesting **Top-K cross-sectional ra
 
 | Stage | What you get | Module |
 |---|---|---|
-| Data | Incremental OHLCV and VNINDEX download via `vnstock`, with cleaning rules | `src/data_collect.py` |
-| Features | 53 candidate features (27 of them WorldQuant-style alphas), market regime columns, forward-return targets. All look-ahead-safe | `src/features.py`, `src/alpha_mining.py` |
+| Data | OHLCV and VNINDEX download via `vnstock` (v6, FHSC source), with data-quality flags instead of dropping or filling rows | `src/data_collect.py` |
+| Features | 53 candidate features (27 of them WorldQuant-style alphas), market regime columns, forward-return targets, masking of rows near flagged data. All look-ahead-safe | `src/features.py`, `src/alpha_mining.py` |
 | Ranking | Walk-forward CV (rolling or expanding) with swappable models: XGBoost LambdaRank, XGBoost MSE, Lasso, LSTM, AlphaForge combiner | `src/models.py` |
 | Entry filter | Composable exposure filters evaluated on market columns | `src/simulation.py` |
 | Simulation | Day-by-day Top-K portfolio with fees, tax, settlement lag and lot sizes | `src/simulation.py` |
@@ -48,7 +48,7 @@ cd Top-K-21-Day-Rebalance
 pip install -r requirements-dev.txt     # full toolkit (torch, gplearn, statsmodels, ...)
 ```
 
-`vnstock` comes from `https://vnstocks.com/api/simple` (set in `requirements-dev.txt`). `BASE_MODEL_PARAMS` uses `device='cuda'`; change it to `'cpu'` without a GPU. `gplearn` is only *used* by the discouraged GP path, but `src/models.py` imports it (and `torch`) at module level, and `src/inference.py` imports from `src/models.py`. So the production signal path still needs `gplearn` and `torch` installed, even though it never runs GP.
+`vnstock` (v6) comes from the `https://vnstocks.com/api/packages` index (set in `requirements-dev.txt`; the daily workflow runs `pip install -U --extra-index-url https://vnstocks.com/api/packages vnstock`). Fetching needs the FHSC credentials in the environment (`FHSC_API_KEY`, `FHSC_API_SECRET`). `BASE_MODEL_PARAMS` sets no `device`, so XGBoost trains on CPU, which is what the daily Kaggle kernel uses (GPU off); add `'device': 'cuda'` only for GPU experiments. `gplearn` is only *used* by the discouraged GP path, but `src/models.py` imports it (and `torch`) at module level, and `src/inference.py` imports from `src/models.py`. So the production signal path still needs `gplearn` and `torch` installed, even though it never runs GP (the Kaggle kernel installs `gplearn` itself and takes `torch` from the Kaggle image).
 
 ## Pipeline walkthrough
 
@@ -57,11 +57,19 @@ pip install -r requirements-dev.txt     # full toolkit (torch, gplearn, statsmod
 ```python
 from src.data_collect import get_tags, update_market_data, fetch_indicator_data
 
-update_market_data("market_data.parquet", get_tags(), start_date="2016-01-01")
-fetch_indicator_data("VNINDEX", "2016-01-01", "vnindex_data.parquet")
+update_market_data("market_data.parquet", get_tags(), start_date="2016-01-01", source="fhsc")
+fetch_indicator_data("VNINDEX", "2016-01-01", "vnindex_data.parquet", source="fhsc")
 ```
 
-`get_tags()` returns a built-in ticker list (about 300 names); `get_tags(fetching=True)` pulls the live `VNALL` members. Up-to-date symbols are skipped, others are re-fetched and merged by `(date, Symbol)`. `clean_ohlcv` repairs rows that break OHLC rules. After each merge, every symbol's history up to and including its latest zero-volume day is dropped.
+`get_tags()` returns a built-in ticker list (about 300 names); `get_tags(fetching=True)` pulls the live `VNALL` members. Up-to-date symbols are skipped; the others are fully re-fetched and merged by `(date, Symbol)`. Always pass `source` explicitly when calling from code (the function default is `"dnse"`; the script's default is `fhsc`).
+
+- **FHSC is the primary source.** It owns `market_data.parquet`; other sources write `market_data_<source>.parquet`.
+- **Nothing is dropped or forward-filled.** Suspicious rows get flags (`f_nan`, `f_bad_ohlc`, `f_zero_vol`, `f_big_move`, `f_dup`, `f_any`), and `build_features` masks rows near them.
+- **Prices are back-adjusted, volume is raw.** `close_raw` keeps the unadjusted close as first seen, and `build_features` uses it to rescale volume so that `close * volume` is the real traded value.
+- **History starts in January 2017.** The 2016 rows of the old unadjusted vnstock5 file were removed in a one-time migration (`migrate_hf.py`); the collector refuses to run on a file without `close_raw`.
+- **Cross-check against DNSE (optional, local).** DNSE timed out from GitHub runners, so it is not collected in CI. Run `VNSTOCK_SOURCE=dnse python src/data_collect.py`, then `python src/check_sources.py`, which fails when the two sources disagree on more than 10% of symbols on the latest common date.
+
+Details and caveats: [MODULES.md](MODULES.md#data_collectpy).
 
 ### 2. Features and targets: `src/features.py`
 
@@ -76,7 +84,8 @@ df_latest = build_features(df_raw, adtv_limit=2_500_000, generate_target=False) 
 - Computed but disabled in `config.py`: structural features (`turnover_12m`, `limit_bias_60d`, `amihud_illiquidity`), `WQ_Alpha_201/202`, and `dist_52w_high` / `log_ret_skip1m` (`price_structure` is not called at all).
 - Market columns: `regime_bucket_monthly` (dispersion quartile, `Q1` lowest), `market1m_ema21`, `market3m_ema63`, breadth.
 - Label: `target_magnitude`, the next 21-day log return over trailing volatility, min-max scaled to 0–100 per date.
-- `adtv_limit` flags illiquid rows: excluded from cross-sectional statistics, removed once at the end.
+- `adtv_limit` flags illiquid rows: excluded from cross-sectional statistics, removed once at the end. ADTV is `close * volume` after the volume rescale, i.e. the real traded value.
+- Data-quality mask: a row is dropped if a flagged bar lies in the previous 22 rows of its symbol (and the next 21 when targets are built). A symbol with a flagged bar in its last 22 rows is therefore left out of the live ranking.
 
 ### 3. Walk-forward ranking: `src/models.py`
 
@@ -216,10 +225,14 @@ The workflows are kept for documentation. They reference a `data-storage` branch
 
 | Workflow | Trigger | What it does in the private repo |
 |---|---|---|
-| `daily_update.yml` | Manual | Pull data from the Hugging Face dataset, update it, push changes back, then trigger the next workflow only if something changed |
-| `precompute_model.yml` | Manual or after data update | Push `kernel.py` to Kaggle and wait for it to finish |
+| `daily_update.yml` | Manual | Install `vnstock` v6, collect FHSC data into the Hugging Face dataset (pull, update, push), then trigger the next workflow only if something changed. DNSE is not collected here |
+| `precompute_model.yml` | Manual or after data update | Push `kernel.py` to Kaggle (CPU only, internet on) and wait for it to finish |
 
-GitHub Actions secrets: `KAGGLE_USERNAME`, `KAGGLE_KEY`, `HF_TOKEN` (write-scoped), `GH_PAT` (used by the kernel to clone the repo). Market data is stored in a private Hugging Face dataset, not in the repo. `precompute_model.yml` replaces the `__HF_TOKEN__` and `__GH_PAT__` placeholders in `kaggle_kernel/kernel.py` with these secrets before pushing it to Kaggle; the kernel aborts with "Secrets were not injected" if a placeholder is still present. Never commit `kernel.py` with real tokens filled in. The workflow pins the Kaggle CLI (`kaggle==1.7.4.5`) and installs `six` explicitly, because newer unpinned releases failed at import on the GitHub runner.
+GitHub Actions secrets: `KAGGLE_USERNAME`, `KAGGLE_KEY`, `HF_TOKEN` (write-scoped), `GH_PAT` (used by the kernel to clone the repo), `FHSC_API_KEY`, `FHSC_API_SECRET` (data vendor credentials, passed to the collection step). Market data is stored in the Hugging Face dataset `PhongHPham/vn_cross_sectional_ranking_data_storage`, not in the repo. `precompute_model.yml` replaces the `__HF_TOKEN__` and `__GH_PAT__` placeholders in `kaggle_kernel/kernel.py` with these secrets before pushing it to Kaggle; the kernel aborts with "Secrets were not injected" if a placeholder is still present. Never commit `kernel.py` with real tokens filled in. The workflow pins the Kaggle CLI (`kaggle==1.7.4.5`) and installs `six` explicitly, because newer unpinned releases failed at import on the GitHub runner.
+
+## Data note
+
+Results produced before the FHSC migration used the old vnstock5 data, which was unadjusted for corporate actions (for example, one-day drops of 15-33% on stock-dividend ex-dates) and included 2016. They are not comparable with the current dataset; rerun backtests before quoting numbers.
 
 ## Research background
 

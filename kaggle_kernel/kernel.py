@@ -23,8 +23,13 @@ hf_hub_download(repo_id=HF_DATA_REPO, filename="market_data.parquet",
                 local_dir='/kaggle/working/repo/data')
 
 # ── 3. Install dependencies ───────────────────────────────────────────────────
-os.system("pip install -q -r /kaggle/working/repo/requirements-dev.txt")
-
+import subprocess
+subprocess.run(
+    [sys.executable, "-m", "pip", "install", "-q",
+     "numpy", "pandas", "pyarrow", "scipy", "scikit-learn",
+     "xgboost", "gplearn", "huggingface_hub"],
+    check=True,
+)
 # ── 4. Build features/targets (required input for signal generation) ────────
 os.chdir('/kaggle/working/repo')
 sys.path.insert(0, '/kaggle/working/repo')

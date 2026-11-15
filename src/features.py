@@ -419,6 +419,24 @@ def build_targets(df):
     return df
 
 
+META_COLS = ["source", "close_raw", "f_nan", "f_bad_ohlc", "f_zero_vol", "f_big_move", "f_dup", "f_any"]
+FLAG_BACK, FLAG_FWD = 22, 21   # lookback incl. own bar; forward target horizon
+
+
+def taint_mask(df, forward: bool = False):
+    """True where a flagged bar (f_any) lies within FLAG_BACK rows behind, or
+    FLAG_FWD rows ahead (if forward), of a row, per Symbol. Requires df sorted
+    by [Symbol, date]. No-op (all False) if the file has no flags yet."""
+    if "f_any" not in df.columns:
+        return pd.Series(False, index=df.index)
+    bad = df["f_any"].fillna(False).astype(float)
+    g = bad.groupby(df["Symbol"])
+    m = g.transform(lambda x: x.rolling(FLAG_BACK, min_periods=1).max()) > 0
+    if forward:
+        m |= g.transform(lambda x: x[::-1].rolling(FLAG_FWD, min_periods=1).max()[::-1]) > 0
+    return m
+
+
 def build_features(df, min_stocks_per_date: int = 50, adtv_limit = None, generate_target:bool=True):
     """
     Build all features for the dataset.
@@ -433,7 +451,12 @@ def build_features(df, min_stocks_per_date: int = 50, adtv_limit = None, generat
     df = df.copy()
     df = df.sort_values(["Symbol", "date"])
 
-    
+    # FHSC close is back-adjusted but volume is raw shares: rescale volume so
+    # close * volume equals the real traded value (ADTV, Amihud) and share
+    # volume is on the same basis across ex-dates.
+    if "close_raw" in df.columns:
+        df["volume"] = df["volume"] * df["close_raw"] / df["close"]
+
 
     df = return_ln(df)
 
@@ -523,9 +546,19 @@ def build_features(df, min_stocks_per_date: int = 50, adtv_limit = None, generat
  
     feature_cols = [
         col for col in df.columns
-        if col not in ["Symbol", "date", "close", "high", "low", "open", "volume"]
+        if col not in ["Symbol", "date", "close", "high", "low", "open", "volume"] + META_COLS
     ]
     df[feature_cols] = df[feature_cols].replace([np.inf, -np.inf], np.nan)
+
+    # Data-quality mask: a row is unusable if a flagged bar sits inside its
+    # lookback window (features) or, when targets exist, its forward window.
+    # Rows are kept until here so rolling windows stay contiguous; the
+    # dropna below then removes them (and the live row of a tainted symbol).
+    tainted = taint_mask(df, forward=generate_target)
+    if tainted.any():
+        logging.getLogger(__name__).warning(
+            "Data-quality mask: %d rows tainted by flagged bars.", int(tainted.sum()))
+        df.loc[tainted, feature_cols] = np.nan
     df.dropna(subset=feature_cols, inplace=True)
 
     # Drop dates that have fewer than min_stocks_per_date surviving symbols

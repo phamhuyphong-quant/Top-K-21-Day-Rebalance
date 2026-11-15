@@ -27,14 +27,17 @@ jobs:
           python-version: '3.11'
 
       - name: 📦 Install dependencies
-        run: pip install vnstock pandas pyarrow huggingface_hub --extra-index-url https://vnstocks.com/api/simple
+        run: pip install -U --extra-index-url https://vnstocks.com/api/packages vnstock pandas pyarrow huggingface_hub
 
       # Pulls existing parquet from the HF dataset, fetches new days, uploads back
       # to HF if anything changed, and sets outputs.changed for the next step.
-      - name: 🚀 Run data collection
+      - name: 🚀 Collect FHSC (primary)
         id: collect
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          VNSTOCK_SOURCE: fhsc
+          FHSC_API_KEY: ${{ secrets.FHSC_API_KEY }}
+          FHSC_API_SECRET: ${{ secrets.FHSC_API_SECRET }}
         run: python src/data_collect.py
 
       - name: 🧠 Trigger precompute model (only if data changed)

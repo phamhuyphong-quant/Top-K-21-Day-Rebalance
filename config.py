@@ -74,7 +74,6 @@ candidate_features = [
     #"amihud_illiquidity", # log1p(|ret|/volume, 21d) — illiquidity premium proxy
 ]
 BASE_MODEL_PARAMS= {
-    'device':             'cuda',
     'tree_method':        'hist',
     'objective':          'rank:ndcg',
     'random_state':       42,

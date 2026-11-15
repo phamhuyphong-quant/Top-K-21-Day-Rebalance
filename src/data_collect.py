@@ -23,7 +23,6 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-
 # ── Hugging Face storage ──────────────────────────────────────────────────────
 HF_REPO_ID = os.environ.get("HF_DATA_REPO", "PhongHPham/vn_cross_sectional_ranking_data_storage")
 HF_TOKEN = os.environ.get("HF_TOKEN")
@@ -119,33 +118,19 @@ def get_tags(fetching=False):
 
 
 # ── Data cleaning ─────────────────────────────────────────────────────────────
-def clean_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Applies OHLCV sanity rules — no rows are ever dropped:
-      - Detect any OHLC violation per row (high < low, high < open/close,
-        low > open/close, or any non-positive price)
-      - If ANY violation is found on a row, forward-fill ALL four OHLC
-        columns for that row from the previous valid row
-      - Volume is left completely untouched
-    """
-    price_cols = ["open", "high", "low", "close"]
+MAX_MOVE = 0.15
+P = ["open", "high", "low", "close"]
 
-    # Mark rows with any OHLC violation
-    violation = (
-        (df["high"] < df["low"])
-        | (df["high"] < df["open"])
-        | (df["high"] < df["close"])
-        | (df["low"]  > df["open"])
-        | (df["low"]  > df["close"])
-        | (df[price_cols] <= 0).any(axis=1)
+def flag_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
+    df["f_nan"] = df[P + ["volume"]].isna().any(axis=1)
+    df["f_bad_ohlc"] = (
+        (df.high < df.low) | (df.high < df.open) | (df.high < df.close)
+        | (df.low > df.open) | (df.low > df.close) | (df[P] <= 0).any(axis=1)
     )
-
-    if violation.any():
-        log.debug("  Flagging %d OHLC-violation rows for ffill", violation.sum())
-        # Set all four OHLC columns to NaN on bad rows, then ffill
-        df.loc[violation, price_cols] = np.nan
-        df[price_cols] = df[price_cols].ffill()
-
+    df["f_zero_vol"] = ~(df.volume > 0)  # also catches NaN
+    df["f_big_move"] = df.groupby("Symbol")["close"].pct_change(fill_method=None).abs() > MAX_MOVE
+    df["f_dup"] = df["f_dup"].fillna(False).astype(bool) if "f_dup" in df else False
+    df["f_any"] = df[["f_nan", "f_bad_ohlc", "f_zero_vol", "f_big_move", "f_dup"]].any(axis=1)
     return df
 
 
@@ -157,7 +142,7 @@ def _save(df: pd.DataFrame, file_path: str) -> None:
     df.to_parquet(file_path, index=False)
 
 
-def _fetch_quote(symbol: str, start_d: str, end_d: str) -> pd.DataFrame | None:
+def _fetch_quote(symbol: str, start_d: str, end_d: str,source:str) -> pd.DataFrame | None:
     """
     Fetches OHLCV history for a single symbol from the given source.
     Returns a cleaned DataFrame on success, or None if the source fails.
@@ -165,11 +150,7 @@ def _fetch_quote(symbol: str, start_d: str, end_d: str) -> pd.DataFrame | None:
     so the caller can try a fallback source.
     """
     while True:
-        df = Market().equity(symbol).ohlcv(
-            start=start_d,
-            end=end_d,
-            interval="1D",
-        )
+        df = Market(source).equity(symbol).ohlcv(start=start_d, end=end_d, interval="1D")
 
         if df is None or df.empty:
             log.warning("! %s — no data returned", symbol)
@@ -177,16 +158,17 @@ def _fetch_quote(symbol: str, start_d: str, end_d: str) -> pd.DataFrame | None:
 
         df = df.rename(columns={"time": "date"})
         df["Symbol"] = str(symbol)
+        df['source']=source
         df["date"] = (
             pd.to_datetime(df["date"], errors="coerce")
             .dt.normalize()
             .dt.tz_localize(None)
         )
-        df = df.drop_duplicates(subset=["date", "Symbol"]).sort_values(["Symbol", "date"])
-        df = clean_ohlcv(df)
-
+        df["f_dup"] = df.duplicated(["date", "Symbol"], keep=False)
+        df = df.drop_duplicates(["date", "Symbol"], keep="last").sort_values(["Symbol", "date"])
+        # (remove: df = clean_ohlcv(df))
         if df.empty:
-            log.warning("! %s [%s] — empty after cleaning", symbol)
+            log.warning("! %s — empty after cleaning", symbol)
             return None
 
         return df
@@ -197,14 +179,16 @@ def update_market_data(
     symbols: list,
     start_date: str = "2016-01-01",
     batch_size: int = 1,
-    base_sleep: float = 7,
+    base_sleep: float = 0.3,
     filter_symbols: bool = True,
+    source: str="dnse",
 ) -> None:
     """
     Fetches full stock history from start_date to today for every symbol.
     Existing data is preserved; freshly fetched rows overwrite on (date, Symbol).
     OHLC violations are fixed by ffill-ing the entire candle; volume is untouched.
-    No rows are dropped.
+    Newly fetched rows with volume <= 0 are dropped. The final DataFrame is
+    sorted by Symbol and date, and saved to the given Parquet file.
 
     filter_symbols: if True (default), purges rows from existing data whose
     Symbol is no longer in the provided symbols list. Set to False to keep
@@ -235,6 +219,10 @@ def update_market_data(
     else:
         existing_df = pd.DataFrame()
         latest_dates = pd.Series(dtype="datetime64[ns]")
+    if os.environ.get("FORCE_REFRESH") == "1" and not existing_df.empty:
+        existing_df = existing_df[~existing_df["Symbol"].isin(symbols)]
+        latest_dates = latest_dates.iloc[0:0]
+        log.warning("FORCE_REFRESH: discarded existing rows for %d symbols", len(symbols))
 
     # Last trading day (rolls back to Friday on weekends)
     # Last completed trading day:
@@ -252,9 +240,8 @@ def update_market_data(
     if market_closed_today and today.weekday() < 5:
         last_trading_day = today
     else:
-        # Roll back to the previous weekday (skips weekends)
-        days_back = 1 if today.weekday() > 0 else 3  # Monday rolls back to Friday
-        last_trading_day = today - pd.Timedelta(days=days_back)
+        last_trading_day = today - pd.offsets.BDay(1)
+
     new_data: list[pd.DataFrame] = []
     processed = 0
 
@@ -270,7 +257,7 @@ def update_market_data(
 
         try:
             log.info("→ %s fetching", symbol)
-            df = _fetch_quote(symbol, start_date, today_str)
+            df = _fetch_quote(symbol, start_date, today_str,source)
 
             if df is not None:
                 log.info("✓ %s — %d rows fetched", symbol, len(df))
@@ -282,12 +269,13 @@ def update_market_data(
             log.error("✗ %s error: %s", symbol, msg)
 
             rate_match = re.search(r"(\d+)\s*(giây|seconds?)", msg, re.IGNORECASE)
-            if rate_match:
-                wait = int(rate_match.group(1)) + 1
+            # in the except block of update_market_data
+            if rate_match or "RATE_LIMIT" in msg.upper() or "429" in msg:
+                wait = int(rate_match.group(1)) + 1 if rate_match else 15
                 log.info("⏳ Rate limit — waiting %ds then retrying…", wait)
                 time.sleep(wait)
                 try:
-                    df = _fetch_quote(symbol, start_date, today_str)
+                    df = _fetch_quote(symbol, start_date, today_str,source)
                     if df is not None:
                         log.info("✓ %s — %d rows after retry", symbol, len(df))
                 except Exception as retry_exc:
@@ -313,62 +301,37 @@ def update_market_data(
         existing_df = _merge_and_dedup(existing_df, new_data)
         _save(existing_df, file_path)
         log.info("💾 Final save — %d total rows", len(existing_df))
-
-def _drop_before_last_zero_volume(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    For each symbol, finds the latest date where volume == 0, then drops all
-    rows from the beginning up to and including that date.
-    Symbols with no zero-volume rows are left completely untouched.
-
-    Example
-    -------
-    Symbol ACB has zero-volume rows on 2017-03-10 and 2020-06-15.
-    The latest is 2020-06-15, so every ACB row with date <= 2020-06-15 is removed.
-    ACB rows from 2020-06-16 onwards are kept.
-    """
-    if df.empty or "volume" not in df.columns:
-        return df
-
-    # Find the latest zero-volume date per symbol
-    zero_vol = df[df["volume"] == 0].groupby("Symbol")["date"].max().rename("cutoff")
-
-    if zero_vol.empty:
-        return df
-
-    df = df.merge(zero_vol.reset_index(), on="Symbol", how="left")
-
-    # Drop rows where date <= cutoff (NaN cutoff = no zero-volume row → keep all)
-    mask_drop = df["cutoff"].notna() & (df["date"] <= df["cutoff"])
-    dropped = mask_drop.sum()
-
-    if dropped:
-        symbols_affected = df.loc[mask_drop, "Symbol"].nunique()
-        log.info(
-            "🧹 Zero-volume trim: dropped %d rows across %d symbol(s)",
-            dropped, symbols_affected,
-        )
-        for sym, cutoff in zero_vol.items():
-            log.debug("  %s — cutoff date: %s", sym, cutoff.date())
-
-    df = df[~mask_drop].drop(columns=["cutoff"])
-    return df
-
+    if os.environ.get("FORCE_REFRESH") == "1":
+        have = set(existing_df["Symbol"]) if "Symbol" in existing_df else set()
+        missing = sorted(set(symbols) - have)
+        if missing:
+            raise RuntimeError(f"FORCE_REFRESH incomplete, missing: {missing}")
 
 def _merge_and_dedup(existing: pd.DataFrame, new_chunks: list) -> pd.DataFrame:
     """
     Merges existing data with new chunks.
     On (date, Symbol) conflict the new fetch wins (keep='last').
-    After deduplication, rows up to and including the latest zero-volume date
+    After deduplication, rows having <= 0 volume
     are dropped per symbol (see _drop_before_last_zero_volume).
     """
     new_df = pd.concat(new_chunks, ignore_index=True)
+    # close_raw = close as first seen (never restated). FHSC back-adjusts `close`
+    # on every full refetch but leaves volume in raw shares, so close*volume is
+    # only correct with close_raw. Carry it over from stored rows.
+    if not existing.empty and "close_raw" not in existing.columns:
+        raise RuntimeError("market_data has no close_raw: run migrate_hf.py before collecting.")
+    if not existing.empty:
+        prior = existing[["Symbol", "date", "close_raw"]].drop_duplicates(["Symbol", "date"])
+        new_df = new_df.drop(columns=["close_raw"], errors="ignore").merge(prior, on=["Symbol", "date"], how="left")
+    if "close_raw" not in new_df:
+        new_df["close_raw"] = np.nan
+    new_df["close_raw"] = new_df["close_raw"].fillna(new_df["close"])   # first sighting
     combined = new_df if existing.empty else pd.concat([existing, new_df], ignore_index=True)
     combined = combined.drop_duplicates(subset=["date", "Symbol"], keep="last")
     combined = combined[combined["date"] >= "2016-01-01"]
     combined = combined.sort_values(["Symbol", "date"]).reset_index(drop=True)
-    combined = _drop_before_last_zero_volume(combined)
     combined = combined.sort_values(["Symbol", "date"]).reset_index(drop=True)
-    return combined
+    return flag_ohlcv(combined)
 
 
 
@@ -377,6 +340,7 @@ def fetch_indicator_data(
     ind_symbol: str,
     start_date: str,
     file_path: str,
+    source  :str="dnse",
 ) -> None:
     """
     Fetches market index data (e.g. VNINDEX), cleans it, and saves to a Parquet file.
@@ -385,7 +349,7 @@ def fetch_indicator_data(
 
     try:
         log.info("→ %s fetching", ind_symbol)
-        df = Market().index(ind_symbol).ohlcv(start=start_date, end=today_str, interval="1D")
+        df = Market(source).index(ind_symbol).ohlcv(start=start_date, end=today_str, interval="1D")
 
         if df is None or df.empty:
             log.error("✗ %s — no data returned.", ind_symbol)
@@ -397,7 +361,7 @@ def fetch_indicator_data(
             .dt.normalize()
             .dt.tz_localize(None)
         )
-        df = df.dropna()
+        df["f_nan"] = df.isna().any(axis=1)
 
         if df.empty:
             log.error("✗ %s — empty after cleaning, no data saved.", ind_symbol)
@@ -412,8 +376,10 @@ def fetch_indicator_data(
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    MARKET_PATH    = "market_data.parquet"
-    VNINDEX_PATH   = "vnindex_data.parquet"
+    source = os.environ.get("VNSTOCK_SOURCE", "fhsc")
+    sfx = "" if source == "fhsc" else f"_{source}"
+    MARKET_PATH  = f"market_data{sfx}.parquet"
+    VNINDEX_PATH = f"vnindex_data{sfx}.parquet"
     START_DATE     = "2016-01-01"
 
     log.info("🤖 Starting data collection…")
@@ -427,17 +393,9 @@ if __name__ == "__main__":
     hash_before = {p: _file_hash(p) for p in (MARKET_PATH, VNINDEX_PATH)}
 
     symbols = get_tags()
-    update_market_data(
-        file_path=MARKET_PATH,
-        symbols=symbols,
-        start_date=START_DATE,
-    )
+    update_market_data(file_path=MARKET_PATH, symbols=symbols, start_date=START_DATE, source=source)
 
-    fetch_indicator_data(
-        ind_symbol="VNINDEX",
-        start_date=START_DATE,
-        file_path=VNINDEX_PATH,
-    )
+    fetch_indicator_data("VNINDEX", START_DATE, VNINDEX_PATH, source)
 
     # Upload only the files that actually changed.
     changed = False
