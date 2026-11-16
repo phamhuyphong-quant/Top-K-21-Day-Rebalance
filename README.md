@@ -42,6 +42,12 @@ Every feature at date *T* uses only data up to the close of *T-1*, and all featu
 
 ## Installation
 
+> **You need your own data-provider credentials.** The data module no longer reads a public endpoint. `src/data_collect.py` fetches through `vnstock` v6 and needs an API key and secret issued to you by the provider: `FHSC_API_KEY` and `FHSC_API_SECRET` for the main source, and `DNSE_API_KEY` and `DNSE_API_SECRET` only for the optional DNSE cross-check. Set them as environment variables when you run it locally, and as GitHub Actions secrets for `daily_update.yml`. Reading the private Hugging Face dataset also needs `HF_TOKEN`.
+>
+> **A missing or invalid key does not stop the run.** The collector logs `✗ <symbol> error` for each symbol, skips it, leaves the file unchanged and ends with `changed=false`, so the workflow can finish green having fetched nothing. Check the log for `✓` lines, not just the run status.
+>
+> Everything downstream of the data (features, models, simulation, evaluation) needs no credentials. To use the toolkit without a vendor account, supply your own parquet with the columns `Symbol`, `date`, `open`, `high`, `low`, `close`, `volume`; `close_raw`, `source` and the `f_*` flags are optional.
+
 ```bash
 git clone https://github.com/phamhuyphong-quant/Top-K-21-Day-Rebalance.git
 cd Top-K-21-Day-Rebalance
@@ -60,6 +66,8 @@ from src.data_collect import get_tags, update_market_data, fetch_indicator_data
 update_market_data("market_data.parquet", get_tags(), start_date="2016-01-01", source="fhsc")
 fetch_indicator_data("VNINDEX", "2016-01-01", "vnindex_data.parquet", source="fhsc")
 ```
+
+This step needs your vendor API credentials (see [Installation](#installation)).
 
 `get_tags()` returns a built-in ticker list (about 300 names); `get_tags(fetching=True)` pulls the live `VNALL` members. Up-to-date symbols are skipped; the others are fully re-fetched and merged by `(date, Symbol)`. Always pass `source` explicitly when calling from code (the function default is `"dnse"`; the script's default is `fhsc`).
 
@@ -228,7 +236,7 @@ The workflows are kept for documentation. They reference a `data-storage` branch
 | `daily_update.yml` | Manual | Install `vnstock` v6, collect FHSC data into the Hugging Face dataset (pull, update, push), then trigger the next workflow only if something changed. DNSE is not collected here |
 | `precompute_model.yml` | Manual or after data update | Push `kernel.py` to Kaggle (CPU only, internet on) and wait for it to finish |
 
-GitHub Actions secrets: `KAGGLE_USERNAME`, `KAGGLE_KEY`, `HF_TOKEN` (write-scoped), `GH_PAT` (used by the kernel to clone the repo), `FHSC_API_KEY`, `FHSC_API_SECRET` (data vendor credentials, passed to the collection step). Market data is stored in the Hugging Face dataset `PhongHPham/vn_cross_sectional_ranking_data_storage`, not in the repo. `precompute_model.yml` replaces the `__HF_TOKEN__` and `__GH_PAT__` placeholders in `kaggle_kernel/kernel.py` with these secrets before pushing it to Kaggle; the kernel aborts with "Secrets were not injected" if a placeholder is still present. Never commit `kernel.py` with real tokens filled in. The workflow pins the Kaggle CLI (`kaggle==1.7.4.5`) and installs `six` explicitly, because newer unpinned releases failed at import on the GitHub runner.
+GitHub Actions secrets: `KAGGLE_USERNAME`, `KAGGLE_KEY`, `HF_TOKEN` (write-scoped), `GH_PAT` (used by the kernel to clone the repo), `FHSC_API_KEY`, `FHSC_API_SECRET` (your data-vendor credentials, required: without them the collection step fetches nothing, yet can still finish green). Market data is stored in the Hugging Face dataset `PhongHPham/vn_cross_sectional_ranking_data_storage`, not in the repo. `precompute_model.yml` replaces the `__HF_TOKEN__` and `__GH_PAT__` placeholders in `kaggle_kernel/kernel.py` with these secrets before pushing it to Kaggle; the kernel aborts with "Secrets were not injected" if a placeholder is still present. Never commit `kernel.py` with real tokens filled in. The workflow pins the Kaggle CLI (`kaggle==1.7.4.5`) and installs `six` explicitly, because newer unpinned releases failed at import on the GitHub runner.
 
 ## Data note
 
